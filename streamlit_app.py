@@ -266,7 +266,7 @@ def render_controls(now: datetime, latest: date, earliest: date) -> tuple[date, 
 def render_plugin_behaviour(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime, midnight: datetime) -> None:
     st.header("Plug-in behaviour")
     median_soc, median_plugged_in = median_trajectory(population, name, window_start, end_dt)
-    st.plotly_chart(build_soc_chart(median_soc, median_plugged_in, midnight), use_container_width=True)
+    st.plotly_chart(build_soc_chart(median_soc, median_plugged_in, midnight), width="stretch")
 
 
 def render_population(population: PopulationResult, window_start: datetime, end_dt: datetime, midnight: datetime, note: str) -> None:
@@ -276,7 +276,7 @@ def render_population(population: PopulationResult, window_start: datetime, end_
         f"from {EVENING_START.strftime('%-I%p').lower()} the day before (T-1) through {note}"
     )
     bands, pct_plugged_in = population_summary(population, window_start, end_dt)
-    st.plotly_chart(build_population_chart(bands, pct_plugged_in, midnight), use_container_width=True)
+    st.plotly_chart(build_population_chart(bands, pct_plugged_in, midnight), width="stretch")
 
 
 def render_savings(population: PopulationResult, archetypes: dict[str, ArchetypeConfig], sim_date: date, earliest: date) -> None:
@@ -289,14 +289,14 @@ def render_savings(population: PopulationResult, archetypes: dict[str, Archetype
     st.dataframe(
         savings_table(population, archetypes, sim_date, earliest),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         column_config=savings_column_config(),
     )
 
 
 def render_price_curve(sim_date: date) -> None:
     st.header("Price curve")
-    st.plotly_chart(build_price_chart(get_prices(sim_date)), use_container_width=True)
+    st.plotly_chart(build_price_chart(get_prices(sim_date)), width="stretch")
 
 
 def main() -> None:

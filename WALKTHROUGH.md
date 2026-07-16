@@ -93,6 +93,21 @@ fetches through tomorrow (not just today) specifically so that lookup normally
 has data. If it's still missing - tomorrow's day-ahead auction hasn't published
 yet - the function fails loudly rather than quietly showing a shorter window.
 
+The same principle applies one level down, inside the slot loop itself: a date
+can be *present* in `market_index.csv` but missing specific half-hour rows (a
+partial fetch, which happened for real - see "Known simplifications" below).
+`get_prices()`'s empty-day check doesn't catch that. So the cost calculation
+only looks the price up when energy was actually delivered that slot, and
+raises if it's missing, rather than defaulting to £0 - a slot that's never
+charged doesn't care what the price was, but one that is must have a real
+number, or the whole day's cost is silently wrong.
+
+Cache writes are atomic (write to a `.<uuid>.pkl.tmp` file, then rename over
+the real one), so a killed process can never leave a truncated file. The temp
+name includes a UUID, not just the PID - Streamlit runs each user session as
+a thread inside one shared process, so concurrent sessions have the same PID
+and would otherwise race on the same temp file.
+
 ### A concrete timeline
 
 - **Monday, first ever load.** No cache files. All 1,200 runs (200 × 6) simulate
@@ -162,6 +177,9 @@ Structured in three layers, top to bottom in the file:
 
 `main()` ties it together and reads as a flat list of steps: get inputs → work
 out the time window → fetch the population once → render each section.
+`is_cache_cold()` decides the spinner text shown during that fetch - a rough
+"do we have anywhere near enough cached runs yet" check, purely cosmetic
+(tells first-time visitors to expect a few minutes; doesn't change behaviour).
 
 ### Key transforms
 
@@ -211,3 +229,17 @@ message rather than silently doing less than what was asked.
 - **Scheduled charging** reuses Average UK's transition tables, so its plug-in
   *timing* is approximate (flagged in its factory method).
 - **One trip pattern per day**, split into two equal legs (out and back).
+
+## Incidents worth knowing about
+
+**`market_index.csv` can have partial-day gaps.** `elexon_client.update_day_ahead_prices`
+fetches whole calendar dates; if it happens to run mid-day (e.g. genuinely
+"today" is that date), Elexon may only have published part of that day's
+settlement periods so far, and the gap never gets backfilled since later
+calls only look forward from the last date, not back to patch holes. This
+actually happened for 14 July 2026 (only the first 29 of 48 periods were
+ever fetched) and, before the fix above, silently priced that evening's
+charging at £0 - which then wrecked the Savings table's baseline comparison
+for every other archetype that day. If a Savings number looks implausible,
+check whether the date in question has all 48 rows in `market_index.csv`
+before assuming it's a simulation bug.

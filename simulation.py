@@ -327,7 +327,16 @@ def advance(
         energy_delivered_kwh = (
             max(0.0, (soc - soc_before_charging)) * archetype.battery_kwh
         )
-        price_gbp_per_mwh = prices.get(simulation_time, 0.0)
+        if energy_delivered_kwh > 0:
+            # Fail loudly rather than silently pricing real energy at £0 -
+            # a date can be present in market_index.csv but missing this
+            # specific slot (a partial fetch), which get_prices()'s
+            # empty-day check doesn't catch.
+            if simulation_time not in prices.index:
+                raise ValueError(f"No price for {simulation_time}, but {archetype.name} charged this slot")
+            price_gbp_per_mwh = prices[simulation_time]
+        else:
+            price_gbp_per_mwh = 0.0
         cost = energy_delivered_kwh * price_gbp_per_mwh / 1000
 
         marker = (
