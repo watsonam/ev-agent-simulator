@@ -1,4 +1,3 @@
-import os
 import pickle
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -7,6 +6,7 @@ from math import ceil
 from pathlib import Path
 from random import gauss, random
 from typing import TypedDict
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -464,11 +464,11 @@ def get_or_advance_run(
         new_rows, run_state = advance(archetype, run_state, end_dt)
         trajectory = pd.concat([trajectory, new_rows])
 
-    # Atomic rename: a killed process can't leave a truncated cache file.
-    # Suffix includes the PID so two concurrent writers (e.g. Streamlit's
-    # autoreload overlapping a script rerun mid-write) never share a tmp
-    # file and race each other's replace().
-    tmp_path = cache_path.with_suffix(f".{os.getpid()}.pkl.tmp")
+    # Atomic rename: a killed writer can't leave a truncated cache file.
+    # Suffix includes a UUID, not just the PID - Streamlit runs each user
+    # session as a thread in one shared process, so concurrent sessions have
+    # the same PID and would otherwise share (and race on) the same tmp file.
+    tmp_path = cache_path.with_suffix(f".{uuid4().hex}.pkl.tmp")
     with open(tmp_path, "wb") as f:
         pickle.dump((trajectory, run_state), f)
     tmp_path.replace(cache_path)

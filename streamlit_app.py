@@ -10,6 +10,7 @@ from elexon_client import update_day_ahead_prices
 from simulation import (
     LOOKBACK_DAYS,
     MARKET_INDEX_CSV,
+    RUN_CACHE_DIR,
     PopulationResult,
     get_archetype,
     get_population_runs,
@@ -72,6 +73,16 @@ def sim_window(sim_date: date, now: datetime) -> tuple[datetime, datetime, datet
 
 def time_note(sim_date: date, now: datetime) -> str:
     return f"up to {now.strftime('%H:%M')} today" if sim_date == now.date() else "the full day"
+
+
+def is_cache_cold(runs_per_archetype: int) -> bool:
+    """Rough check for whether this load is about to pay the full simulation
+    cost (few or no cached runs yet) rather than just extending existing
+    ones - used to set an honest spinner message, not to change behaviour."""
+    if not RUN_CACHE_DIR.exists():
+        return True
+    cached = len(list(RUN_CACHE_DIR.glob("*.pkl")))
+    return cached < len(ARCHETYPE_NAMES) * runs_per_archetype
 
 
 def _require_rows(df: pd.DataFrame, population: PopulationResult, window_start: datetime, end_dt: datetime) -> None:
@@ -302,7 +313,13 @@ def main() -> None:
 
     window_start, midnight, end_dt = sim_window(sim_date, now)
     note = time_note(sim_date, now)
-    with st.spinner("Fetching simulated runs..."):
+    spinner_text = (
+        f"First-time setup: simulating {RUNS_PER_ARCHETYPE * len(ARCHETYPE_NAMES)} runs "
+        "across 6 archetypes. Takes a few minutes, only happens once - every later "
+        "visit reads from cache and is instant."
+        if is_cache_cold(RUNS_PER_ARCHETYPE) else "Loading..."
+    )
+    with st.spinner(spinner_text):
         population = get_population_runs(end_dt, RUNS_PER_ARCHETYPE)
 
     render_plugin_behaviour(population, selected_name, window_start, end_dt, midnight)
