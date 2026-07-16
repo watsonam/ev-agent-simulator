@@ -312,15 +312,17 @@ shading, and the hover's state label always agree, by construction. The
 "Population on this day" chart still covers the aggregate/percentile view
 across all runs.
 
-SoC renders as a plain diagonal line between slots (matches how the
-chart looked before this investigation started); the "Plugged in" fill
-uses `line_shape="hv"` (a step), which is correct for boolean data.
-`hovermode="x"` on this chart makes hover snap to the actual half-hourly
-sample instead of interpolating a fake in-between value off the drawn
-line's pixel position, and `hoverinfo="skip"` on the "Plugged in" trace
-stops it popping its own redundant tooltip. The diagonal is a rendering
-choice, not a claim about what happens *between* samples - the
-simulation only ever computes SoC at 30-minute slot boundaries; a trip's
-whole energy cost is subtracted in the single slot its departure fires
-in, not drained gradually across however long the drive takes (see "One
-trip pattern per day" above).
+Both SoC and the "Plugged in" fill render as plain diagonal lines between
+slots (same `line_shape`, deliberately) so the shaded region tapers off
+in lockstep with the SoC line's own decline, instead of `line_shape="hv"`
+holding the fill shaded for the whole slot and only dropping at the end -
+which visually extended the shading past where SoC had already started
+falling. `hovermode="x unified"` makes hover snap to the actual
+half-hourly sample (never an interpolated in-between value) and stacks
+both traces' info under one timestamp header instead of each popping its
+own floating tooltip. The diagonal is a rendering choice, not a claim
+about what happens *between* samples - the simulation only ever computes
+SoC at 30-minute slot boundaries; a trip's whole energy cost is
+subtracted in the single slot its departure fires in, not drained
+gradually across however long the drive takes (see "One trip pattern per
+day" above).

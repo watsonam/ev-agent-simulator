@@ -188,7 +188,7 @@ def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, mid
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     plugged_in_label = plugged_in.map({1.0: "Yes", 0.0: "No"})
     fig.add_trace(go.Scatter(
-        x=soc.index, y=plugged_in, mode="lines", line_shape="hv", fill="tozeroy",
+        x=soc.index, y=plugged_in, mode="lines", fill="tozeroy",
         fillcolor=COLOR_OCCUPANCY_FILL, line=dict(width=0), name="Plugged in",
         customdata=plugged_in_label, hovertemplate="Plugged in: %{customdata}<extra></extra>",
     ), secondary_y=True)
