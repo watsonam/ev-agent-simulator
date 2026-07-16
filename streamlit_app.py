@@ -186,10 +186,11 @@ def mark_weekends(fig: go.Figure, index: pd.DatetimeIndex) -> None:
 
 def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, midnight: datetime) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
+    plugged_in_label = plugged_in.map({1.0: "Yes", 0.0: "No"})
     fig.add_trace(go.Scatter(
         x=soc.index, y=plugged_in, mode="lines", line_shape="hv", fill="tozeroy",
         fillcolor=COLOR_OCCUPANCY_FILL, line=dict(width=0), name="Plugged in",
-        hoverinfo="skip",
+        customdata=plugged_in_label, hovertemplate="Plugged in: %{customdata}<extra></extra>",
     ), secondary_y=True)
     fig.add_trace(go.Scatter(
         x=soc.index, y=soc, mode="lines",
@@ -198,7 +199,7 @@ def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, mid
     ), secondary_y=False)
     fig.update_yaxes(title_text="SoC", range=auto_range(soc), gridcolor="rgba(0,0,0,0.06)", secondary_y=False)
     fig.update_yaxes(visible=False, range=[0, 1], secondary_y=True)
-    fig.update_layout(xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"), hovermode="x")
+    fig.update_layout(xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"), hovermode="x unified")
     mark_today(fig, midnight)
     mark_weekends(fig, soc.index)
     return fig
