@@ -5,6 +5,32 @@ import pytest
 
 
 @pytest.mark.skip(reason="TODO")
+def test_annual_energy_matches_archetype_miles_per_year():
+    """Simulate ~1 year for each of the 6 archetypes, sum delivered kWh,
+    convert to miles, and assert it's within a tolerance band of
+    miles_per_year (allowing for the known long-trip gap - see WALKTHROUGH.md
+    'Known simplifications'). This is the test that would have caught
+    infrequent_charging's weekday_weekend_ratio bug immediately, for every
+    archetype at once, instead of only when someone eyeballed one chart."""
+
+
+@pytest.mark.skip(reason="TODO")
+def test_advance_raises_rather_than_pricing_missing_slot_at_zero():
+    """Give advance() a price Series with a gap during a slot where SoC
+    increases; assert it raises ValueError instead of silently costing that
+    energy at £0. This is the exact bug that wrecked the Savings table's
+    baseline comparison for 14 July 2026 - see WALKTHROUGH.md 'Incidents'."""
+
+
+@pytest.mark.skip(reason="TODO")
+def test_concurrent_writes_to_the_same_cache_file_dont_corrupt():
+    """Call get_or_advance_run for the same (archetype, run_number) from two
+    threads at once; assert neither raises FileNotFoundError and the final
+    cache file loads cleanly. Reproduces the two real races found this
+    session (PID-keyed, then same-process-thread-keyed tmp filenames)."""
+
+
+@pytest.mark.skip(reason="TODO")
 def test_advance_never_produces_soc_outside_zero_and_target():
     """Run advance() for a few archetypes over a few days; assert
     0 <= soc <= target_soc for every row. Catches ramp/drop arithmetic bugs."""
