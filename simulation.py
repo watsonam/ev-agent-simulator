@@ -54,7 +54,7 @@ def get_archetype(name: str) -> ArchetypeConfig:
         raise ValueError(f"Unknown archetype '{name}'. Options: {list(_ARCHETYPES)}")
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=1) # what does this do
 def _load_price_data(mtime: float) -> pd.DataFrame:
     """market_index.csv, cached until its mtime changes. Avoids re-parsing
     the whole file on every get_prices() call."""
@@ -62,11 +62,11 @@ def _load_price_data(mtime: float) -> pd.DataFrame:
 
 
 def _price_data() -> pd.DataFrame:
-    return _load_price_data(MARKET_INDEX_CSV.stat().st_mtime)
+    return _load_price_data(MARKET_INDEX_CSV.stat().st_mtime) # and this
 
 
 def get_prices(d: date) -> pd.Series:
-    """Half-hourly EPEX day-ahead price (£/MWh) for `d`, indexed by slot start time."""
+    """Half-hourly EPEX day-ahead prices"""
     df = _price_data()
     day = df[df["settlementDate"] == pd.Timestamp(d)].sort_values("settlementPeriod")
     if day.empty:
@@ -582,15 +582,6 @@ def plugged_in_share(
         return plugged_in.mean(axis=1)
     weight_array = weights.reindex(plugged_in.columns)
     return plugged_in.mul(weight_array, axis=1).sum(axis=1) / weight_array.sum()
-
-
-def dominant_state(state_df: pd.DataFrame) -> pd.Series:
-    """Most common state across runs at each time slot - lets the dashboard
-    show *why* a median/aggregate SoC line is flat or moving (e.g. a
-    plateau while most runs are still PARKED/DRIVING and haven't started
-    charging yet, even though a bare majority already counts as "plugged
-    in" for the shading). Unweighted: for display context, not maths."""
-    return state_df.mode(axis=1)[0]
 
 
 if __name__ == "__main__":

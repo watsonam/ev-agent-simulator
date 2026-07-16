@@ -328,6 +328,22 @@ number next to a real-but-mismatched state label. Fixed by setting
 `hovermode="x"` on the individual-archetype chart, which snaps hover to
 the nearest actual x-sample instead of interpolating along the curve.
 
+That still left a deeper problem: `median_soc` (a rank-order statistic)
+and the majority-vote/modal state (a most-frequent-category statistic) are
+two independent reductions over the same 200 runs, and can genuinely
+disagree at real data points near a 50/50 split - not an interpolation
+artifact, not fixable by choosing a different "median-like" statistic for
+state (state is categorical; there's no meaningful order to take a median
+*of* - see the "why not median_state" discussion this session). Root
+fix: **`sample_run_trajectory`** replaced `median_trajectory` - the
+"Plug-in behaviour" chart now shows one real simulated run (`{name}_0`),
+not an aggregate. SoC, "Plugged in", and state all come from the exact
+same run, so they can never contradict each other, and since a single
+run's SoC genuinely is a step function (flat, then an instant real drop
+when it departs), `line_shape="hv"` is now honestly correct rather than a
+population-smoothing artifact. The "Population on this day" chart still
+covers the aggregate/percentile view across all runs.
+
 **A flat median SoC segment isn't necessarily a bug.** `median_soc` and
 `median_plugged_in` are two independent reductions over the same 200 runs -
 one a 50th-percentile SoC value, the other a majority vote on plugged-in
