@@ -28,11 +28,18 @@ ARCHETYPE_NAMES = [
     "scheduled_charging",
     "always_plugged_in",
 ]
-# Runs are cached and extended incrementally rather than recomputed from
-# scratch, so this is a one-time cost per archetype, not a per-view one -
-# safe to run much higher than the old live-recompute budget of 30.
-RUNS_PER_ARCHETYPE = 200
+RUNS_PER_ARCHETYPE = 200  # cheap: runs are cached and extended, not recomputed each view
 EVENING_START = time(18, 0)  # both timeline charts start here the day before, for overnight context
+
+# Shared palette - one look across all charts, not styled per-chart.
+COLOR_SOC = "#1864ab"
+COLOR_BAND_EDGE = "#74c0fc"
+COLOR_BAND_FILL = "rgba(24, 100, 171, 0.12)"
+COLOR_OCCUPANCY = "rgba(134, 142, 150, 0.35)"
+COLOR_OCCUPANCY_FILL = "rgba(134, 142, 150, 0.25)"
+COLOR_PRICE = "#495057"
+COLOR_TODAY_MARKER = "#868e96"
+COLOR_WEEKEND = "#845ef7"
 
 
 # --- Pure data helpers -------------------------------------------------
@@ -52,12 +59,8 @@ def slice_window(df: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFra
 
 
 def sim_window(sim_date: date, now: datetime) -> tuple[datetime, datetime, datetime]:
-    """
-    Returns the start on the graph window:
-     - start i.e 6pm day before
-    - midnight i.e. when we cross into the selected date
-    - end i.e. now, the most up to date 30 minute slow
-    """
+    """(start, midnight, end) of the chart window: 6pm the day before, the
+    sim_date/T-1 boundary, and now (or end of sim_date if it's a past date)."""
     start = datetime.combine(sim_date - timedelta(days=1), EVENING_START)
     midnight = datetime.combine(sim_date, time.min)
     if sim_date == now.date():
@@ -72,12 +75,8 @@ def time_note(sim_date: date, now: datetime) -> str:
 
 
 def _require_rows(df: pd.DataFrame, population: PopulationResult, window_start: datetime, end_dt: datetime) -> None:
-    """The incremental cache only grows forward from whenever it was first
-    created - it doesn't backfill history before that. Slicing a window
-    that starts before the cache does silently returns an empty DataFrame
-    (and would otherwise crash deep inside a numpy reduction with no useful
-    message), so fail here instead, with the actual bound so it's obvious
-    what date range is available."""
+    """Fail clearly if the window is before the cache's earliest data,
+    instead of an empty DataFrame crashing later with no useful message."""
     if df.empty:
         cached_from = population["soc"].index.min()
         raise ValueError(
@@ -152,16 +151,14 @@ def savings_table(population: PopulationResult, archetypes: dict[str, ArchetypeC
 # --- Chart builders (pure: data in, go.Figure out) ----------------------
 
 def mark_today(fig: go.Figure, midnight: datetime) -> None:
-    """Vertical line + label at midnight, so the T-1 evening-context portion
-    of the timeline is clearly distinguished from sim_date itself."""
-    fig.add_vline(x=midnight, line_dash="dash", line_color="#868e96")
-    fig.add_annotation(x=midnight, y=1.03, yref="paper", showarrow=False, text="T-1 | Today", font=dict(size=11, color="#868e96"))
+    """Vertical line + label at midnight, separating T-1 from sim_date."""
+    fig.add_vline(x=midnight, line_dash="dash", line_color=COLOR_TODAY_MARKER)
+    fig.add_annotation(x=midnight, y=1.03, yref="paper", showarrow=False, text="T-1 | Today", font=dict(size=11, color=COLOR_TODAY_MARKER))
 
 
 def mark_weekends(fig: go.Figure, index: pd.DatetimeIndex) -> None:
-    """Light background shading behind Saturday/Sunday, so weekend behaviour
-    (different transition tables - errands, not commutes) is visually
-    obvious rather than something you have to read off the "%a" tick labels."""
+    """Light shading behind Saturday/Sunday - weekend transition tables
+    differ (errands, not commutes), so this should be visible at a glance."""
     start, end = index.min(), index.max()
     day = start.date()
     while day <= end.date():
@@ -169,7 +166,7 @@ def mark_weekends(fig: go.Figure, index: pd.DatetimeIndex) -> None:
             span_start = max(start, datetime.combine(day, time.min))
             span_end = min(end, datetime.combine(day + timedelta(days=2), time.min))
             if span_start < span_end:
-                fig.add_vrect(x0=span_start, x1=span_end, fillcolor="#845ef7", opacity=0.08, layer="below", line_width=0)
+                fig.add_vrect(x0=span_start, x1=span_end, fillcolor=COLOR_WEEKEND, opacity=0.08, layer="below", line_width=0)
         day += timedelta(days=1)
 
 
@@ -177,10 +174,10 @@ def build_soc_chart(median_soc: pd.Series, median_plugged_in: pd.Series, midnigh
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(
         x=median_soc.index, y=median_plugged_in, mode="lines", line_shape="hv", fill="tozeroy",
-        fillcolor="rgba(120,120,120,0.2)", line=dict(width=0), name="Plugged in",
+        fillcolor=COLOR_OCCUPANCY_FILL, line=dict(width=0), name="Plugged in",
     ), secondary_y=True)
-    fig.add_trace(go.Scatter(x=median_soc.index, y=median_soc, mode="lines", line=dict(color="#e8590c", width=2), name="SoC"), secondary_y=False)
-    fig.update_yaxes(title_text="SoC", range=auto_range(median_soc), secondary_y=False)
+    fig.add_trace(go.Scatter(x=median_soc.index, y=median_soc, mode="lines", line=dict(color=COLOR_SOC, width=2.5), name="SoC"), secondary_y=False)
+    fig.update_yaxes(title_text="SoC", range=auto_range(median_soc), gridcolor="rgba(0,0,0,0.06)", secondary_y=False)
     fig.update_yaxes(visible=False, range=[0, 1], secondary_y=True)
     fig.update_layout(xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"))
     mark_today(fig, midnight)
@@ -189,7 +186,7 @@ def build_soc_chart(median_soc: pd.Series, median_plugged_in: pd.Series, midnigh
 
 
 def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midnight: datetime) -> go.Figure:
-    edge = dict(color="#74c0fc", width=1, dash="dot")
+    edge = dict(color=COLOR_BAND_EDGE, width=1, dash="dot")
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(
         x=bands.index, y=bands["p05"], mode="lines", line=edge,
@@ -197,16 +194,16 @@ def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midni
     ), secondary_y=False)
     fig.add_trace(go.Scatter(
         x=bands.index, y=bands["p95"], mode="lines", line=edge,
-        fill="tonexty", fillcolor="rgba(24,100,171,0.12)",
+        fill="tonexty", fillcolor=COLOR_BAND_FILL,
         name="p05-p95 range", hovertemplate="p95: %{y:.3f}<extra></extra>",
     ), secondary_y=False)
     fig.add_trace(go.Scatter(
-        x=bands.index, y=bands["p50"], mode="lines", line=dict(color="#1864ab", width=2.5),
+        x=bands.index, y=bands["p50"], mode="lines", line=dict(color=COLOR_SOC, width=2.5),
         name="Median SoC", hovertemplate="median: %{y:.3f}<extra></extra>",
     ), secondary_y=False)
     fig.add_trace(go.Bar(
         x=pct_plugged_in.index, y=pct_plugged_in.values, name="% plugged in",
-        marker=dict(color="rgba(134,142,150,0.35)", line_width=0),
+        marker=dict(color=COLOR_OCCUPANCY, line_width=0),
     ), secondary_y=True)
 
     soc_lo = min(float(bands.to_numpy().min()), 1.0)
@@ -223,7 +220,8 @@ def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midni
 
 
 def build_price_chart(prices: pd.Series) -> go.Figure:
-    fig = go.Figure(go.Scatter(x=[t.strftime("%H:%M") for t in prices.index], y=prices.values, mode="lines"))
+    fig = go.Figure(go.Scatter(x=[t.strftime("%H:%M") for t in prices.index], y=prices.values, mode="lines", line=dict(color=COLOR_PRICE, width=2)))
+    fig.update_yaxes(gridcolor="rgba(0,0,0,0.06)")
     fig.update_layout(yaxis_title="£/MWh", xaxis_title="Time")
     return fig
 
@@ -297,10 +295,7 @@ def main() -> None:
     update_day_ahead_prices(MARKET_INDEX_CSV)
     now = datetime.now()
     latest = latest_price_date()
-    # Narrowed to what the incremental cache actually guarantees: it always
-    # starts LOOKBACK_DAYS before whenever it was first bootstrapped, and
-    # only grows forward from there - so this is always safely covered.
-    earliest = now.date() - timedelta(days=LOOKBACK_DAYS)
+    earliest = now.date() - timedelta(days=LOOKBACK_DAYS)  # matches what the cache guarantees
 
     sim_date, selected_name = render_controls(now, latest, earliest)
     archetypes = {name: get_archetype(name) for name in ARCHETYPE_NAMES}
