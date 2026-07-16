@@ -182,19 +182,6 @@ AVERAGE_UK_WEEKDAY_TRANSITIONS = WeekdayTransitions(
 )
 
 
-INFREQUENT_CHARGING_WEEKDAY_TRANSITIONS = WeekdayTransitions(
-    # Sheet note: "someone who doesn't drive to work but does a fair amount
-    # of travelling at the weekend" - plugged_idle_to_driving is empty so
-    # they never leave PLUGGED_IDLE on a weekday; the other 3 curves are
-    # unreachable as a result (kept, reused from average_uk, since the
-    # dataclass requires them) but never fire in practice.
-    plugged_idle_to_driving={},
-    parked_to_driving=AVERAGE_UK_WEEKDAY_TRANSITIONS.parked_to_driving,
-    driving_to_parked=AVERAGE_UK_WEEKDAY_TRANSITIONS.driving_to_parked,
-    driving_to_plugged_in=AVERAGE_UK_WEEKDAY_TRANSITIONS.driving_to_plugged_in,
-)
-
-
 ALWAYS_PLUGGED_IN_WEEKDAY_TRANSITIONS = WeekdayTransitions(
     # Charges wherever they stop, not just at home: driving_to_parked is
     # disabled (empty) and its window folded into driving_to_plugged_in, so
@@ -269,13 +256,14 @@ class ArchetypeFactory:
 
     @staticmethod
     def infrequent_charging() -> ArchetypeConfig:
-        # Sheet note: "someone who doesn't drive to work but does a fair
-        # amount of travelling at the weekend" - no weekday commute at all
-        # (see INFREQUENT_CHARGING_WEEKDAY_TRANSITIONS), weekend errand trip
-        # reused unchanged from average_uk. weekday_weekend_ratio=0 (not
-        # average_uk's 2.0) because weekday driving is impossible here - the
-        # whole annual mileage budget has to land on weekend_kwh_per_day, or
-        # most of it is computed into weekday_kwh_per_day and never spent.
+        # Drives the same pattern as average_uk (same miles_per_year, same
+        # transition tables) - "infrequent" describes charging, not driving:
+        # plugin_frequency_per_day=0.2 doubles as the per-plug-in probability
+        # of actually starting a charge (see the DRIVING->PLUGGED_CHARGING
+        # branch in advance()), so soc drifts down over several days of
+        # driving before a big top-up. Matches the sheet's own kwh_per_plugin
+        # (37, vs average_uk's 7) and plugin_soc (0.18, a ~0.6 soc deficit)
+        # far better than a no-weekday-driving reading did.
         return ArchetypeConfig(
             name="Infrequent charging",
             charging_strategy=ChargingStrategy.IMMEDIATE,
@@ -290,8 +278,8 @@ class ArchetypeFactory:
             target_soc=0.8,
             long_trip_days_per_year=5,
             long_trip_miles=150,
-            weekday_weekend_ratio=0.0,
-            weekday_transitions=INFREQUENT_CHARGING_WEEKDAY_TRANSITIONS,
+            weekday_weekend_ratio=2.0,
+            weekday_transitions=AVERAGE_UK_WEEKDAY_TRANSITIONS,
             weekend_transitions=AVERAGE_UK_WEEKEND_TRANSITIONS,
         )
 

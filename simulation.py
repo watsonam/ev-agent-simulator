@@ -293,13 +293,13 @@ def advance(
                         f"  [{simulation_time}] sampled idle departure time: {idle_departure_time}"
                     )
                 if simulation_time >= idle_departure_time:
-                    state, soc = State.DRIVING, soc - trip_soc_drop
+                    state, soc = State.DRIVING, max(0.0, soc - trip_soc_drop)
                     idle_departure_time = None
             else:
                 # Clear a stale sample so it can't leak into a future weekend.
                 idle_departure_time = None
                 if drive_today and sample < get_transition_probability(curve, lookup_time):
-                    state, soc = State.DRIVING, soc - trip_soc_drop
+                    state, soc = State.DRIVING, max(0.0, soc - trip_soc_drop)
 
         elif state == State.PARKED:
             curve = transitions.parked_to_driving
@@ -312,14 +312,14 @@ def advance(
                         f"  [{simulation_time}] sampled parked departure time: {parked_departure_time}"
                     )
                 if simulation_time >= parked_departure_time:
-                    state, soc = State.DRIVING, soc - trip_soc_drop
+                    state, soc = State.DRIVING, max(0.0, soc - trip_soc_drop)
                     parked_departure_time = None
             else:
                 parked_departure_time = (
                     None  # same leak-prevention as idle_departure_time above
                 )
                 if sample < get_transition_probability(curve, lookup_time):
-                    state, soc = State.DRIVING, soc - trip_soc_drop
+                    state, soc = State.DRIVING, max(0.0, soc - trip_soc_drop)
 
         elif state == State.DRIVING:
             if sample < get_transition_probability(
@@ -329,7 +329,22 @@ def advance(
             elif sample < get_transition_probability(
                 transitions.driving_to_plugged_in, lookup_time
             ):
-                state = State.PLUGGED_CHARGING
+                # plugin_frequency_per_day doubles as "P(this plug-in actually
+                # starts a charge)" - 1.0 for every archetype except
+                # infrequent_charging, so this is a no-op everywhere else.
+                # When it doesn't fire, they're still plugged in (PLUGGED_IDLE)
+                # just not drawing power, and soc keeps eroding on later trips.
+                # The soc<=plugin_soc fallback caps how low that erosion can
+                # go - plugin_soc is exactly the "arrive at this charge" level
+                # the sheet's own numbers imply, so it forces a charge once
+                # they'd hit their normal deficit rather than letting an
+                # unlucky streak of skipped plug-ins run the battery dry.
+                state = (
+                    State.PLUGGED_CHARGING
+                    if random() < archetype.plugin_frequency_per_day
+                    or soc <= archetype.plugin_soc
+                    else State.PLUGGED_IDLE
+                )
 
         energy_delivered_kwh = (
             max(0.0, (soc - soc_before_charging)) * archetype.battery_kwh

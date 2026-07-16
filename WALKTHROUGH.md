@@ -252,6 +252,30 @@ for every other archetype that day. If a Savings number looks implausible,
 check whether the date in question has all 48 rows in `market_index.csv`
 before assuming it's a simulation bug.
 
+**`infrequent_charging` originally modeled "doesn't drive to work" instead
+of "doesn't charge often."** The spreadsheet's own descriptive note said
+"someone who doesn't drive to work" - but its numbers (`miles_per_year`
+identical to Average UK, `kwh_per_plugin=37` vs Average UK's 7,
+`plugin_soc=0.18` vs Average UK's 0.68) only make sense for someone who
+drives *as much* as Average UK but charges far less often, letting soc
+drift down over several days before a big top-up. The sheet's own notes
+were an early draft and the numbers are the better signal here. Fixed by
+switching `infrequent_charging` back to Average UK's transition tables and
+`weekday_weekend_ratio`, and making `plugin_frequency_per_day` (already an
+existing field, previously only used for `initial_state`'s starting soc)
+double as the per-plug-in probability of actually starting a charge, in
+`advance()`'s `DRIVING -> PLUGGED_CHARGING` branch. First pass used a pure
+Bernoulli gate and it went badly: 12.6% of all slots landed at soc==0.0
+(some charge-free streaks ran 15 days, well past what a 60kWh battery can
+absorb at ~8kWh/day). Fixed by adding `or soc <= archetype.plugin_soc` to
+the gate, forcing a charge once they'd hit the deficit level the sheet's
+own numbers imply, capping the worst-case gap at ~7 days instead of an
+unbounded geometric tail - soc never truncates to 0.0 anymore, and the
+annualized mileage lands at 89%, matching every other archetype's known
+long-trip gap. Same change also fixed a latent bug affecting every
+archetype's driving-soc-drop: `soc - trip_soc_drop` wasn't clamped at 0,
+just never got exercised before because no archetype went that low.
+
 **`infrequent_driving` drove every weekday, just with smaller trips.** It
 reused Average UK's transition tables and formula unchanged - only
 `miles_per_year` was lower - so the *frequency* of driving matched Average UK
