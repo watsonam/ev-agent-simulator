@@ -298,3 +298,25 @@ hours before its own configured plug-out time. Fixed by giving it its own
 `SCHEDULED_CHARGING_WEEKDAY_TRANSITIONS`, the same curve shifted +2h so the
 departure centers on 09:00. Its other three curves (leaving/arriving work)
 are unaffected since they're about the commute, not home charging.
+
+**The SoC line visually "leaked" into the shaded plugged-in region.** The
+"Plugged in" fill used `line_shape="hv"` (a step - flat, then a vertical
+drop exactly at the departure slot), but the SoC line had no `line_shape`,
+so Plotly drew a diagonal between points. That diagonal visually implied
+SoC was declining gradually across the whole shaded interval, when the
+data was actually flat right up to that one slot. Fixed by giving the SoC
+line (and the population chart's p05/p95/median bands) the same
+`line_shape="hv"`, so both change at the same pixel.
+
+**A flat median SoC segment isn't necessarily a bug.** `median_soc` and
+`median_plugged_in` are two independent reductions over the same 200 runs -
+one a 50th-percentile SoC value, the other a majority vote on plugged-in
+state. Because runs arrive home at staggered times (the `driving_to_plugged_in`
+curve spans 17:00-21:00), it's normal for a bare majority to already count
+as "plugged in" while the median SoC value is still pinned to the
+still-driving/parked cohort's frozen value, because not enough runs have
+finished arriving-and-charging yet to move the middle of the distribution.
+This looks like "shaded but not charging" but isn't - `dominant_state()`
+in `simulation.py` now feeds the SoC line's hover tooltip with the actual
+majority state at each slot, so this is checkable at a glance instead of
+having to dig into the per-run data.

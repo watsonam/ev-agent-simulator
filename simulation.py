@@ -584,6 +584,15 @@ def plugged_in_share(
     return plugged_in.mul(weight_array, axis=1).sum(axis=1) / weight_array.sum()
 
 
+def dominant_state(state_df: pd.DataFrame) -> pd.Series:
+    """Most common state across runs at each time slot - lets the dashboard
+    show *why* a median/aggregate SoC line is flat or moving (e.g. a
+    plateau while most runs are still PARKED/DRIVING and haven't started
+    charging yet, even though a bare majority already counts as "plugged
+    in" for the shading). Unweighted: for display context, not maths."""
+    return state_df.mode(axis=1)[0]
+
+
 if __name__ == "__main__":
     ARCHETYPE_NAME = "average_uk"  # change this to test other archetypes
     START_DATE = date(2026, 6, 24)

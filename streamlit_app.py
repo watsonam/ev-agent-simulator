@@ -12,6 +12,7 @@ from simulation import (
     MARKET_INDEX_CSV,
     RUN_CACHE_DIR,
     PopulationResult,
+    dominant_state,
     get_archetype,
     get_population_runs,
     get_prices,
@@ -96,17 +97,20 @@ def _require_rows(df: pd.DataFrame, population: PopulationResult, window_start: 
         )
 
 
-def median_trajectory(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime) -> tuple[pd.Series, pd.Series]:
-    """Median SoC and majority-vote plugged-in status across one archetype's
-    runs - weighted_quantiles/plugged_in_share with every run weighted
-    equally, the same reductions the population view uses with real weights."""
+def median_trajectory(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Median SoC, majority-vote plugged-in status, and the most common
+    per-run state (for hover context) across one archetype's runs -
+    weighted_quantiles/plugged_in_share/dominant_state with every run
+    weighted equally, the same reductions the population view uses with
+    real weights."""
     soc_runs = slice_window(archetype_columns(population["soc"], name), window_start, end_dt)
     state_runs = slice_window(archetype_columns(population["state"], name), window_start, end_dt)
     _require_rows(soc_runs, population, window_start, end_dt)
     uniform_weights = pd.Series(1.0, index=soc_runs.columns)
     median_soc = weighted_quantiles(soc_runs, uniform_weights, [0.5])[0.5]
     median_plugged_in = (plugged_in_share(state_runs) >= 0.5).astype(float)
-    return median_soc, median_plugged_in
+    modal_state = dominant_state(state_runs).map(lambda s: s.name)
+    return median_soc, median_plugged_in, modal_state
 
 
 def population_summary(population: PopulationResult, window_start: datetime, end_dt: datetime) -> tuple[pd.DataFrame, pd.Series]:
@@ -181,13 +185,17 @@ def mark_weekends(fig: go.Figure, index: pd.DatetimeIndex) -> None:
         day += timedelta(days=1)
 
 
-def build_soc_chart(median_soc: pd.Series, median_plugged_in: pd.Series, midnight: datetime) -> go.Figure:
+def build_soc_chart(median_soc: pd.Series, median_plugged_in: pd.Series, modal_state: pd.Series, midnight: datetime) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(
         x=median_soc.index, y=median_plugged_in, mode="lines", line_shape="hv", fill="tozeroy",
         fillcolor=COLOR_OCCUPANCY_FILL, line=dict(width=0), name="Plugged in",
     ), secondary_y=True)
-    fig.add_trace(go.Scatter(x=median_soc.index, y=median_soc, mode="lines", line_shape="hv", line=dict(color=COLOR_SOC, width=2.5), name="SoC"), secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=median_soc.index, y=median_soc, mode="lines", line_shape="hv",
+        line=dict(color=COLOR_SOC, width=2.5), name="SoC", customdata=modal_state,
+        hovertemplate="SoC: %{y:.3f}<br>Most common state: %{customdata}<extra></extra>",
+    ), secondary_y=False)
     fig.update_yaxes(title_text="SoC", range=auto_range(median_soc), gridcolor="rgba(0,0,0,0.06)", secondary_y=False)
     fig.update_yaxes(visible=False, range=[0, 1], secondary_y=True)
     fig.update_layout(xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"))
@@ -265,8 +273,8 @@ def render_controls(now: datetime, latest: date, earliest: date) -> tuple[date, 
 
 def render_plugin_behaviour(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime, midnight: datetime) -> None:
     st.header("Plug-in behaviour")
-    median_soc, median_plugged_in = median_trajectory(population, name, window_start, end_dt)
-    st.plotly_chart(build_soc_chart(median_soc, median_plugged_in, midnight), width="stretch")
+    median_soc, median_plugged_in, modal_state = median_trajectory(population, name, window_start, end_dt)
+    st.plotly_chart(build_soc_chart(median_soc, median_plugged_in, modal_state, midnight), width="stretch")
 
 
 def render_population(population: PopulationResult, window_start: datetime, end_dt: datetime, midnight: datetime, note: str) -> None:
