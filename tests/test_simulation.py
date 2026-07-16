@@ -67,3 +67,23 @@ def test_charging_schedule_sized_to_deficit():
 def test_past_price_gap_raises():
     with pytest.raises(ValueError):
         simulation._prices_with_dates(date(2020, 1, 1))
+
+
+def test_sample_run_trajectory_drops_leading_nan():
+    # Near the earliest date the view window starts before a run's first slot,
+    # so the aligned population has leading NaN rows - these must be dropped,
+    # not fed to state.name (which crashed the live app).
+    import pandas as pd
+    import streamlit_app
+    from archetypes import State
+
+    idx = pd.to_datetime(["2026-07-09 17:30", "2026-07-09 18:00", "2026-07-09 18:30"])
+    state = pd.DataFrame({"average_uk_0": [float("nan"), State.PLUGGED_IDLE, State.DRIVING]}, index=idx)
+    soc = pd.DataFrame({"average_uk_0": [float("nan"), 0.8, 0.7]}, index=idx)
+    population = {"soc": soc, "state": state, "cost": soc, "weights": pd.Series({"average_uk_0": 1.0})}
+
+    soc_run, plugged_in, state_names = streamlit_app.sample_run_trajectory(
+        population, "average_uk", idx[0].to_pydatetime(), datetime(2026, 7, 9, 19, 0)
+    )
+    assert list(state_names) == ["PLUGGED_IDLE", "DRIVING"]
+    assert len(soc_run) == 2

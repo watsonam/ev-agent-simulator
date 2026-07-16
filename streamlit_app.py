@@ -92,9 +92,13 @@ def _require_rows(df: pd.DataFrame, population: PopulationResult, window_start: 
 
 def sample_run_trajectory(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime) -> tuple[pd.Series, pd.Series, pd.Series]:
     run_col = f"{name}_0"
-    soc_run = slice_window(population["soc"][[run_col]], window_start, end_dt)[run_col]
-    state_run = slice_window(population["state"][[run_col]], window_start, end_dt)[run_col]
-    _require_rows(soc_run.to_frame(), population, window_start, end_dt)
+    # A run starts at its own plugin_time, so near the earliest selectable date
+    # the window can reach back before this run has any slots - those rows come
+    # through as NaN once the archetypes are aligned. Drop them so we only plot
+    # real simulated slots.
+    state_run = slice_window(population["state"][[run_col]], window_start, end_dt)[run_col].dropna()
+    soc_run = slice_window(population["soc"][[run_col]], window_start, end_dt)[run_col].reindex(state_run.index)
+    _require_rows(state_run.to_frame(), population, window_start, end_dt)
     plugged_in = state_run.isin([State.PLUGGED_CHARGING, State.PLUGGED_IDLE]).astype(float)
     return soc_run, plugged_in, state_run.map(lambda s: s.name)
 
