@@ -22,7 +22,11 @@ from archetypes import (
 
 MARKET_INDEX_CSV = Path(__file__).parent / "data" / "market_index.csv"
 CACHE_DIR = Path(__file__).parent / "data" / "cache"
-RUN_CACHE_DIR = CACHE_DIR / "runs"
+# Bump when the simulated trajectory changes. Streamlit Cloud keeps the run
+# cache across code deploys, so without a version the dashboard would keep
+# serving trajectories built by the old logic.
+RUN_CACHE_VERSION = 2
+RUN_CACHE_DIR = CACHE_DIR / f"runs_v{RUN_CACHE_VERSION}"
 LOOKBACK_DAYS = 7
 
 
