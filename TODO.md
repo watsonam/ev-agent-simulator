@@ -1,0 +1,3 @@
+- Review archetypes
+- Derive quantile logic in simulation, not on load
+- If so, back the target off by 12h and try again -> question
