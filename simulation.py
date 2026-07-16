@@ -94,9 +94,6 @@ def _prices_or_empty(d: date) -> pd.Series:
 
 
 def _prices_with_dates(d: date) -> pd.Series:
-    # Elexon publishes tomorrow's prices late in the day, so today or tomorrow
-    # can be missing when someone loads this. I fall back to the day before
-    # rather than crash. A gap before today is a real problem, so that still raises.
     latest = latest_price_date()
     if d < latest:
         prices = get_prices(d)
@@ -519,9 +516,6 @@ def get_or_advance_run(
         new_rows, run_state = advance(archetype, run_state, end_dt)
         trajectory = pd.concat([trajectory, new_rows])
 
-    # I write to a temp file then rename, so a half-written cache can't be read.
-    # The temp name uses a UUID not the PID because Streamlit runs every session
-    # in the one process, so they'd share a PID and clash on the same temp file.
     tmp_path = cache_path.with_suffix(f".{uuid4().hex}.pkl.tmp")
     with open(tmp_path, "wb") as f:
         pickle.dump((trajectory, run_state), f)
@@ -557,8 +551,6 @@ def get_population_runs(end_dt: datetime, runs_per_archetype: int) -> Population
 def _weighted_quantile(
     values: np.ndarray, weights: np.ndarray, quantile: float
 ) -> float:
-    # Runs that haven't started yet come through as NaN (see weighted_mean);
-    # quantile over the runs that are actually present, not the whole column.
     mask = ~np.isnan(values)
     if not mask.any():
         return float("nan")
@@ -585,9 +577,6 @@ def weighted_quantiles(
 
 
 def weighted_mean(df: pd.DataFrame, weights: pd.Series) -> pd.Series:
-    # Divide by the weight of the runs actually present in each row, not the
-    # whole column - near the earliest date some runs haven't started (NaN),
-    # and dividing by the full weight would understate the mean.
     weight_array = weights.reindex(df.columns).to_numpy(dtype=float)
     present_weight = df.notna().mul(weight_array, axis=1).sum(axis=1)
     return df.mul(weight_array, axis=1).sum(axis=1) / present_weight
@@ -603,82 +592,3 @@ def plugged_in_share(
         return plugged_in.mean(axis=1)
     weight_array = weights.reindex(plugged_in.columns)
     return plugged_in.mul(weight_array, axis=1).sum(axis=1) / weight_array.sum()
-
-
-if __name__ == "__main__":
-    ARCHETYPE_NAME = "average_uk"
-    START_DATE = date(2026, 6, 24)
-
-    archetype = get_archetype(ARCHETYPE_NAME)
-    print(
-        f"\n{'=' * 80}\n{ARCHETYPE_NAME} ({archetype.charging_strategy.name})\n{'=' * 80}"
-    )
-    df = simulate_week(archetype, START_DATE)
-
-    state_str = df["state"].astype(str)
-    plugin_events = df[
-        (state_str == "State.PLUGGED_CHARGING")
-        & (state_str.shift(1) != "State.PLUGGED_CHARGING")
-    ]
-    print(f"\n--- {ARCHETYPE_NAME}: plug-in events (time, soc) ---")
-    print(plugin_events[["soc"]].to_string())
-
-    N_RUNS = 20
-    print(f"\n{'=' * 80}\nrun_monte_carlo: {ARCHETYPE_NAME}, {N_RUNS} runs\n{'=' * 80}")
-    result = run_monte_carlo(archetype, START_DATE, n_runs=N_RUNS)
-
-    soc_df, state_df, cost_df = result["soc"], result["state"], result["cost"]
-    print(f"soc shape:   {soc_df.shape}")
-    print(f"state shape: {state_df.shape}")
-    print(f"cost shape:  {cost_df.shape}")
-
-    bad_soc = soc_df[(soc_df < -1e-9) | (soc_df > archetype.target_soc + 1e-4)]
-    print(f"\nout-of-bounds soc values: {bad_soc.count().sum()}")
-    print(f"NaN soc values:           {soc_df.isna().sum().sum()}")
-    print(f"NaN cost values:          {cost_df.isna().sum().sum()}")
-
-    print(
-        f"\ntotal cost per run: min=£{cost_df.sum().min():.2f}  "
-        f"mean=£{cost_df.sum().mean():.2f}  max=£{cost_df.sum().max():.2f}"
-    )
-
-    print("\nsoc percentile bands (10/50/90), last 5 slots:")
-    print(soc_df.quantile([0.1, 0.5, 0.9], axis=1).T.tail())
-
-    RUNS_PER_ARCHETYPE = 500
-    print(
-        f"\n{'=' * 80}\nrecapitulate_population: {RUNS_PER_ARCHETYPE} runs per archetype (x6)\n{'=' * 80}"
-    )
-    population = recapitulate_population(
-        START_DATE, runs_per_archetype=RUNS_PER_ARCHETYPE
-    )
-    pop_soc, pop_state, pop_cost, weights = (
-        population["soc"],
-        population["state"],
-        population["cost"],
-        population["weights"],
-    )
-
-    print(
-        f"soc shape:   {pop_soc.shape}   (expect (days*48) x {RUNS_PER_ARCHETYPE * 6})"
-    )
-    print(f"weights sum: {weights.sum():.4f}  (expect 1.0)")
-    bad_pop_soc = pop_soc[(pop_soc < -1e-9) | (pop_soc > 0.8001)]
-    print(f"out-of-bounds soc values: {bad_pop_soc.count().sum()}")
-    print(f"NaN soc values:           {pop_soc.isna().sum().sum()}")
-
-    print(
-        f"\npopulation total cost: min=£{pop_cost.sum().min():.2f}  "
-        f"mean=£{pop_cost.sum().mean():.2f}  max=£{pop_cost.sum().max():.2f}"
-    )
-
-    print("\npopulation soc WEIGHTED percentile bands (5/50/95), last 5 slots:")
-    bands = weighted_quantiles(pop_soc, weights, [0.05, 0.5, 0.95])
-    print(bands.tail())
-
-    print("\n% plugged in (PLUGGED_CHARGING or PLUGGED_IDLE), weighted, last 5 slots:")
-    plugged_in = pop_state.isin([State.PLUGGED_CHARGING, State.PLUGGED_IDLE]).astype(
-        float
-    )
-    weighted_share = plugged_in.mul(weights, axis=1).sum(axis=1) / weights.sum()
-    print(weighted_share.tail())

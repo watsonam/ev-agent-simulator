@@ -7,7 +7,6 @@ import archetypes
 import simulation
 
 
-# These are straight off the spreadsheet (Sheet1, rows 2-7).
 SPREADSHEET = {
     "average_uk":          dict(pop=40, miles=9435,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
     "intelligent_octopus": dict(pop=30, miles=28105, battery=72.5, eff=3.5, freq=1.0, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
