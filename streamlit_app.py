@@ -187,7 +187,7 @@ def build_soc_chart(median_soc: pd.Series, median_plugged_in: pd.Series, midnigh
         x=median_soc.index, y=median_plugged_in, mode="lines", line_shape="hv", fill="tozeroy",
         fillcolor=COLOR_OCCUPANCY_FILL, line=dict(width=0), name="Plugged in",
     ), secondary_y=True)
-    fig.add_trace(go.Scatter(x=median_soc.index, y=median_soc, mode="lines", line=dict(color=COLOR_SOC, width=2.5), name="SoC"), secondary_y=False)
+    fig.add_trace(go.Scatter(x=median_soc.index, y=median_soc, mode="lines", line_shape="hv", line=dict(color=COLOR_SOC, width=2.5), name="SoC"), secondary_y=False)
     fig.update_yaxes(title_text="SoC", range=auto_range(median_soc), gridcolor="rgba(0,0,0,0.06)", secondary_y=False)
     fig.update_yaxes(visible=False, range=[0, 1], secondary_y=True)
     fig.update_layout(xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"))
@@ -200,16 +200,16 @@ def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midni
     edge = dict(color=COLOR_BAND_EDGE, width=1, dash="dot")
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(
-        x=bands.index, y=bands["p05"], mode="lines", line=edge,
+        x=bands.index, y=bands["p05"], mode="lines", line_shape="hv", line=edge,
         showlegend=False, hovertemplate="p05: %{y:.3f}<extra></extra>",
     ), secondary_y=False)
     fig.add_trace(go.Scatter(
-        x=bands.index, y=bands["p95"], mode="lines", line=edge,
+        x=bands.index, y=bands["p95"], mode="lines", line_shape="hv", line=edge,
         fill="tonexty", fillcolor=COLOR_BAND_FILL,
         name="p05-p95 range", hovertemplate="p95: %{y:.3f}<extra></extra>",
     ), secondary_y=False)
     fig.add_trace(go.Scatter(
-        x=bands.index, y=bands["p50"], mode="lines", line=dict(color=COLOR_SOC, width=2.5),
+        x=bands.index, y=bands["p50"], mode="lines", line_shape="hv", line=dict(color=COLOR_SOC, width=2.5),
         name="Median SoC", hovertemplate="median: %{y:.3f}<extra></extra>",
     ), secondary_y=False)
     fig.add_trace(go.Bar(
