@@ -81,11 +81,6 @@ def latest_price_date() -> date:
     return _price_data()["settlementDate"].max().date()
 
 
-def slice_day(df: pd.DataFrame, d: date) -> pd.DataFrame:
-    start = datetime.combine(d, time.min)
-    return df[(df.index >= start) & (df.index < start + timedelta(days=1))]
-
-
 def _prices_or_empty(d: date) -> pd.Series:
     try:
         return get_prices(d)

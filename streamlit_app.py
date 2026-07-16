@@ -21,7 +21,6 @@ from simulation import (
     next_occurrence,
     plugged_in_share,
     prices_in_window,
-    slice_day,
     weighted_mean,
     weighted_quantiles,
 )
@@ -143,38 +142,27 @@ def population_summary(population: PopulationResult, window_start: datetime, end
     return bands, pct_plugged_in
 
 
-def cost_totals(population: PopulationResult, name: str, archetype: ArchetypeConfig, d: date) -> tuple[pd.Series, pd.Series]:
-    # Diff the whole trajectory before slicing the day, so the 00:00 slot's
-    # charge is measured against 23:30 the night before. Slicing first would
-    # NaN that diff and drop energy the cost side still counts - overstating
-    # p/kWh for archetypes that charge across midnight.
+def cost_totals(population: PopulationResult, name: str, archetype: ArchetypeConfig) -> tuple[pd.Series, pd.Series]:
+    # Whole cached window per run - no day slicing, so charging across midnight
+    # is handled naturally and one noisy day doesn't drive the number.
     energy = archetype_columns(population["soc"], name).diff().clip(lower=0) * archetype.battery_kwh
-    total_kwh = slice_day(energy, d).sum()
-    total_cost = slice_day(archetype_columns(population["cost"], name), d).sum()
-    return total_cost, total_kwh
+    return archetype_columns(population["cost"], name).sum(), energy.sum()
 
 
-def savings_row(population: PopulationResult, name: str, archetype: ArchetypeConfig, sim_date: date, earliest: date) -> dict:
-    total_cost, total_kwh = cost_totals(population, name, archetype, sim_date)
-    day_shown = sim_date
-    fallback_date = sim_date - timedelta(days=1)
-    if total_kwh.sum() <= 0 and fallback_date >= earliest:
-        total_cost, total_kwh = cost_totals(population, name, archetype, fallback_date)
-        day_shown = fallback_date
-
+def savings_row(population: PopulationResult, name: str, archetype: ArchetypeConfig) -> dict:
+    total_cost, total_kwh = cost_totals(population, name, archetype)
     charged = total_kwh > 0
     per_kwh = (total_cost[charged] / total_kwh[charged]).mean() if charged.any() else None
     return {
         "Archetype": archetype.name,
-        "Day shown": day_shown,
         "£/kWh": per_kwh,
         "Total cost (£)": total_cost[charged].mean() if charged.any() else None,
         "Energy (kWh)": total_kwh[charged].mean() if charged.any() else None,
     }
 
 
-def savings_table(population: PopulationResult, archetypes: dict[str, ArchetypeConfig], sim_date: date, earliest: date) -> pd.DataFrame:
-    df = pd.DataFrame([savings_row(population, name, a, sim_date, earliest) for name, a in archetypes.items()])
+def savings_table(population: PopulationResult, archetypes: dict[str, ArchetypeConfig]) -> pd.DataFrame:
+    df = pd.DataFrame([savings_row(population, name, a) for name, a in archetypes.items()])
     baseline = df.loc[df["Archetype"] == archetypes["average_uk"].name, "£/kWh"].iloc[0]
     df["Savings vs Average (UK) (£)"] = (baseline - df["£/kWh"]) * df["Energy (kWh)"]
     return df
@@ -316,13 +304,16 @@ def render_population(population: PopulationResult, window_start: datetime, end_
     st.plotly_chart(build_population_chart(bands, pct_plugged_in, midnight), width="stretch")
 
 
-def render_savings(population: PopulationResult, archetypes: dict[str, ArchetypeConfig], sim_date: date, earliest: date) -> None:
+def render_savings(population: PopulationResult, archetypes: dict[str, ArchetypeConfig]) -> None:
+    idx = population["soc"].index
+    days = (idx.max().date() - idx.min().date()).days + 1
     st.header("Savings")
     st.caption(
-        "£/kWh, averaged over the runs that charged that day. Falls back to the previous day if none have yet."
+        f"Over the last {days} days. £/kWh is each run's total cost over its total energy, averaged across runs. "
+        "Total cost and energy are per-run means. Savings is Average (UK)'s rate applied to the same energy."
     )
     st.dataframe(
-        savings_table(population, archetypes, sim_date, earliest),
+        savings_table(population, archetypes),
         hide_index=True,
         width="stretch",
         column_config=savings_column_config(),
@@ -362,7 +353,7 @@ def main() -> None:
 
     render_plugin_behaviour(population, selected_name, window_start, end_dt, midnight)
     render_population(population, window_start, end_dt, midnight, note)
-    render_savings(population, archetypes, sim_date, earliest)
+    render_savings(population, archetypes)
     render_price_curve(sim_date)
 
 
