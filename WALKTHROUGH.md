@@ -299,14 +299,25 @@ hours before its own configured plug-out time. Fixed by giving it its own
 departure centers on 09:00. Its other three curves (leaving/arriving work)
 are unaffected since they're about the commute, not home charging.
 
-**The SoC line visually "leaked" into the shaded plugged-in region.** The
-"Plugged in" fill used `line_shape="hv"` (a step - flat, then a vertical
-drop exactly at the departure slot), but the SoC line had no `line_shape`,
-so Plotly drew a diagonal between points. That diagonal visually implied
-SoC was declining gradually across the whole shaded interval, when the
-data was actually flat right up to that one slot. Fixed by giving the SoC
-line (and the population chart's p05/p95/median bands) the same
-`line_shape="hv"`, so both change at the same pixel.
+**The SoC line visually "leaked" into the shaded plugged-in region - then
+overcorrecting made it worse.** The "Plugged in" fill uses `line_shape="hv"`
+(a step - flat, then a vertical drop exactly at the departure slot); the
+SoC line had no `line_shape`, so its diagonal segment into a lower value
+visually implied a gradual decline across the whole shaded interval.
+First fix: also gave the SoC line (and the population chart's p05/p95/
+median bands) `line_shape="hv"`. That aligned the boundary but made SoC
+render as an instant vertical cliff - technically accurate to the
+underlying model (a whole trip's energy cost is subtracted in the single
+slot departure fires in, see "One trip pattern per day" above), but a
+population median can concentrate 30-50 percentage points of departures
+into one 30-minute slot when a transition curve is steep there (e.g.
+Average UK's weekday curve: ~49% departed by 07:00, ~84% by 07:30), so
+the "cliff" looked alarmingly sharp and was flagged as looking wrong.
+Reverted SoC (and the percentile bands) back to plain linear interpolation -
+`line_shape="hv"` stays only on the boolean "Plugged in"/"% plugged in"
+traces, where a step is the correct representation. The one-slot diagonal
+overlap this reintroduces is a minor, acceptable approximation; an
+unnaturally sharp cliff on a continuous physical quantity is worse.
 
 **A flat median SoC segment isn't necessarily a bug.** `median_soc` and
 `median_plugged_in` are two independent reductions over the same 200 runs -
