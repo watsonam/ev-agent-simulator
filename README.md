@@ -29,7 +29,7 @@ Calculation assumptions:
 - Calculate a per weekday and weekend kwh use, subtract the long-trip kwh first, then split what's left across the two daily trips (commute out, commute back)
 - A trip's length is sampled up front - 85% chance it takes one 30 min slot, 15% chance two - and the kwh is split evenly across whatever got sampled, so SoC moves every slot spent driving, not just the last one
 
-Two ways of encoding a transition. Weekdays use a per-slot probability table which is good for a commute schedule. Weekends use two simpler curve shapes: GaussianDeparture, where a departure time is sampled once from a normal distribution around a mean (e.g. leave around 10am, back around 2pm), and FlatWindow, a constant probability held within a start/end window and zero outside it. Weekends are more spread out and less regimented, so a sampled time and a flat window fit better than a hand-tuned per-slot ramp.
+Two ways of encoding a transition. Weekdays use a per-slot probability table which is good for a commute schedule. Weekends are more spread out, draw a sampled time around a mean then a flat window
 
 Weekday Transitions:
 - Average UK -> typical commuter, leaving the house sometime between 6am and 8:30am using a conditional probability, so if they haven't left by 8am there's a 100% probability they've left by 8:30am. Leaving work sometime between 16:30 and 19:30, returning home to plug in. This is encoded with a Markov chain transition matrix
@@ -37,7 +37,7 @@ Weekday Transitions:
 - Infrequent Driving - same transitions as Average, but more long trip days a year and a lower weekday to weekend ratio (i.e. more driving on the weekend). Long trips are subtracted before the per-day kwh average is calculated, so they never show up as extra driving in the dashboard - see limitations
 - Scheduled Charging, similar to the Average Uk transitions but centered around 9am to reflect the later plug out time.
 - Infrequent Charging - Same transition times as Average UK but I've used plugin_frequency_per_day as a probability of plugging in, so SoC drifts down over several days of driving before a larger top up.
-- Always plugged-in: charges wherever it stops, not just at home - so the transition to Parked is disabled and folded into Plugged in instead. Because it never visits Parked, the transition that normally triggers the evening trip home never fires either, so it only completes one trip a day, not two - see limitations (I basically ran out of time on this)
+- Always plugged-in: charges wherever it stops, not just at home - so the transition to Parked is disabled and folded into Plugged in instead. Because it never visits Parked, the transition that normally triggers the evening trip home never fires either, so it only completes one trip a day, not two - see limitations (I basically ran out of time on this and could have handled this assumption better at the start)
 
 Weekend Transitions:
 - Average UK -> a single trip out sometime around 10am (Gaussian, not a fixed window), a few hours out, then back sometime around 2pm. Most other archetypes reuse this

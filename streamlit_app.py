@@ -144,10 +144,13 @@ def population_summary(population: PopulationResult, window_start: datetime, end
 
 
 def cost_totals(population: PopulationResult, name: str, archetype: ArchetypeConfig, d: date) -> tuple[pd.Series, pd.Series]:
-    day_soc = slice_day(archetype_columns(population["soc"], name), d)
-    day_cost = slice_day(archetype_columns(population["cost"], name), d)
-    total_kwh = day_soc.diff().clip(lower=0).sum() * archetype.battery_kwh
-    total_cost = day_cost.sum()
+    # Diff the whole trajectory before slicing the day, so the 00:00 slot's
+    # charge is measured against 23:30 the night before. Slicing first would
+    # NaN that diff and drop energy the cost side still counts - overstating
+    # p/kWh for archetypes that charge across midnight.
+    energy = archetype_columns(population["soc"], name).diff().clip(lower=0) * archetype.battery_kwh
+    total_kwh = slice_day(energy, d).sum()
+    total_cost = slice_day(archetype_columns(population["cost"], name), d).sum()
     return total_cost, total_kwh
 
 
