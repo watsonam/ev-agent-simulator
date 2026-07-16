@@ -189,6 +189,7 @@ def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, mid
     fig.add_trace(go.Scatter(
         x=soc.index, y=plugged_in, mode="lines", line_shape="hv", fill="tozeroy",
         fillcolor=COLOR_OCCUPANCY_FILL, line=dict(width=0), name="Plugged in",
+        hoverinfo="skip",
     ), secondary_y=True)
     fig.add_trace(go.Scatter(
         x=soc.index, y=soc, mode="lines", line_shape="hv",
