@@ -557,6 +557,12 @@ def get_population_runs(end_dt: datetime, runs_per_archetype: int) -> Population
 def _weighted_quantile(
     values: np.ndarray, weights: np.ndarray, quantile: float
 ) -> float:
+    # Runs that haven't started yet come through as NaN (see weighted_mean);
+    # quantile over the runs that are actually present, not the whole column.
+    mask = ~np.isnan(values)
+    if not mask.any():
+        return float("nan")
+    values, weights = values[mask], weights[mask]
     order = np.argsort(values)
     values, weights = values[order], weights[order]
     cum_weights = np.cumsum(weights) - 0.5 * weights
@@ -579,8 +585,12 @@ def weighted_quantiles(
 
 
 def weighted_mean(df: pd.DataFrame, weights: pd.Series) -> pd.Series:
+    # Divide by the weight of the runs actually present in each row, not the
+    # whole column - near the earliest date some runs haven't started (NaN),
+    # and dividing by the full weight would understate the mean.
     weight_array = weights.reindex(df.columns).to_numpy(dtype=float)
-    return df.mul(weight_array, axis=1).sum(axis=1) / weight_array.sum()
+    present_weight = df.notna().mul(weight_array, axis=1).sum(axis=1)
+    return df.mul(weight_array, axis=1).sum(axis=1) / present_weight
 
 
 def plugged_in_share(

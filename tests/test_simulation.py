@@ -87,3 +87,29 @@ def test_sample_run_trajectory_drops_leading_nan():
     )
     assert list(state_names) == ["PLUGGED_IDLE", "DRIVING"]
     assert len(soc_run) == 2
+
+
+def test_weighted_quantile_matches_hazen_with_equal_weights():
+    import numpy as np
+    v = np.array([1.0, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    w = np.ones_like(v)
+    for q in [0.05, 0.25, 0.5, 0.75, 0.95]:
+        assert simulation._weighted_quantile(v, w, q) == pytest.approx(
+            np.percentile(v, q * 100, method="hazen")
+        )
+
+
+def test_weighted_quantile_ignores_nan():
+    import numpy as np
+    v = np.array([1.0, 2, 3, float("nan"), float("nan")])
+    w = np.ones_like(v)
+    assert simulation._weighted_quantile(v, w, 0.5) == pytest.approx(2.0)
+
+
+def test_weighted_mean_renormalises_over_present_runs():
+    import pandas as pd
+    df = pd.DataFrame({"a": [float("nan"), 1.0], "b": [0.5, 0.5]})
+    weights = pd.Series({"a": 1.0, "b": 1.0})
+    result = simulation.weighted_mean(df, weights)
+    assert result.iloc[0] == pytest.approx(0.5)   # only b present, not 0.5/2
+    assert result.iloc[1] == pytest.approx(0.75)

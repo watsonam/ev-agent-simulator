@@ -81,7 +81,7 @@ def sim_window(sim_date: date, now: datetime) -> tuple[datetime, datetime, datet
 
 
 def time_note(sim_date: date, now: datetime) -> str:
-    return f"up to {now.strftime('%H:%M')} today" if sim_date == now.date() else "the full day"
+    return f"to {now.strftime('%H:%M')} today" if sim_date == now.date() else "to end of day"
 
 
 def is_cache_cold(runs_per_archetype: int) -> bool:
@@ -305,8 +305,9 @@ def render_plugin_behaviour(population: PopulationResult, name: str, window_star
 def render_population(population: PopulationResult, window_start: datetime, end_dt: datetime, midnight: datetime, note: str) -> None:
     st.header("Population on this day")
     st.caption(
-        f"{RUNS_PER_ARCHETYPE} runs per archetype, weighted by population share - all 6 archetypes, "
-        f"from {EVENING_START.strftime('%-I%p').lower()} the day before (T-1) through {note}"
+        f"Mean state of charge (5th-95th percentile band) and the share of cars plugged in, "
+        f"across all 6 archetypes weighted by population share ({RUNS_PER_ARCHETYPE} runs each). "
+        f"From {EVENING_START.strftime('%-I%p').lower()} the day before (T-1) {note}."
     )
     bands, pct_plugged_in = population_summary(population, window_start, end_dt)
     st.plotly_chart(build_population_chart(bands, pct_plugged_in, midnight), width="stretch")
@@ -315,9 +316,7 @@ def render_population(population: PopulationResult, window_start: datetime, end_
 def render_savings(population: PopulationResult, archetypes: dict[str, ArchetypeConfig], sim_date: date, earliest: date) -> None:
     st.header("Savings")
     st.caption(
-        "£/kWh averaged across the runs that charged that day - the fair comparison across archetypes "
-        "since they use very different amounts of energy (Intelligent Octopus has 3x Average UK's annual "
-        "mileage). Falls back to the previous day where an archetype hasn't charged yet today."
+        "£/kWh, averaged over the runs that charged that day. Falls back to the previous day if none have yet."
     )
     st.dataframe(
         savings_table(population, archetypes, sim_date, earliest),
