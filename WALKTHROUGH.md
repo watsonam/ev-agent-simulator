@@ -319,6 +319,15 @@ traces, where a step is the correct representation. The one-slot diagonal
 overlap this reintroduces is a minor, acceptable approximation; an
 unnaturally sharp cliff on a continuous physical quantity is worse.
 
+Reverting to linear interpolation introduced its own bug: with Plotly's
+default `hovermode="closest"`, hovering over the diagonal segment between
+two real slots showed a fabricated in-between SoC value (read off the
+drawn line's pixel position, not an actual simulated data point) paired
+with `modal_state` from whichever real point was nearest - a fictitious
+number next to a real-but-mismatched state label. Fixed by setting
+`hovermode="x"` on the individual-archetype chart, which snaps hover to
+the nearest actual x-sample instead of interpolating along the curve.
+
 **A flat median SoC segment isn't necessarily a bug.** `median_soc` and
 `median_plugged_in` are two independent reductions over the same 200 runs -
 one a 50th-percentile SoC value, the other a majority vote on plugged-in

@@ -198,7 +198,7 @@ def build_soc_chart(median_soc: pd.Series, median_plugged_in: pd.Series, modal_s
     ), secondary_y=False)
     fig.update_yaxes(title_text="SoC", range=auto_range(median_soc), gridcolor="rgba(0,0,0,0.06)", secondary_y=False)
     fig.update_yaxes(visible=False, range=[0, 1], secondary_y=True)
-    fig.update_layout(xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"))
+    fig.update_layout(xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"), hovermode="x")
     mark_today(fig, midnight)
     mark_weekends(fig, median_soc.index)
     return fig
