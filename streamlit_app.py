@@ -192,7 +192,7 @@ def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, mid
         hoverinfo="skip",
     ), secondary_y=True)
     fig.add_trace(go.Scatter(
-        x=soc.index, y=soc, mode="lines", line_shape="hv",
+        x=soc.index, y=soc, mode="lines",
         line=dict(color=COLOR_SOC, width=2.5), name="SoC", customdata=state,
         hovertemplate="SoC: %{y:.3f}<br>State: %{customdata}<extra></extra>",
     ), secondary_y=False)

@@ -299,60 +299,28 @@ hours before its own configured plug-out time. Fixed by giving it its own
 departure centers on 09:00. Its other three curves (leaving/arriving work)
 are unaffected since they're about the commute, not home charging.
 
-**The SoC line visually "leaked" into the shaded plugged-in region - then
-overcorrecting made it worse.** The "Plugged in" fill uses `line_shape="hv"`
-(a step - flat, then a vertical drop exactly at the departure slot); the
-SoC line had no `line_shape`, so its diagonal segment into a lower value
-visually implied a gradual decline across the whole shaded interval.
-First fix: also gave the SoC line (and the population chart's p05/p95/
-median bands) `line_shape="hv"`. That aligned the boundary but made SoC
-render as an instant vertical cliff - technically accurate to the
-underlying model (a whole trip's energy cost is subtracted in the single
-slot departure fires in, see "One trip pattern per day" above), but a
-population median can concentrate 30-50 percentage points of departures
-into one 30-minute slot when a transition curve is steep there (e.g.
-Average UK's weekday curve: ~49% departed by 07:00, ~84% by 07:30), so
-the "cliff" looked alarmingly sharp and was flagged as looking wrong.
-Reverted SoC (and the percentile bands) back to plain linear interpolation -
-`line_shape="hv"` stays only on the boolean "Plugged in"/"% plugged in"
-traces, where a step is the correct representation. The one-slot diagonal
-overlap this reintroduces is a minor, acceptable approximation; an
-unnaturally sharp cliff on a continuous physical quantity is worse.
+**The "Plug-in behaviour" chart shows one real run, not an aggregate.**
+It used to plot `median_soc` (a rank-order statistic across 200 runs)
+against a majority-vote "plugged in" flag - two independent reductions
+that can genuinely disagree near a 50/50 split (e.g. median SoC already
+reflecting the "departed" group while a majority of runs are still idle),
+which looked like bugs but wasn't fixable by aggregating differently:
+state is categorical, so there's no meaningful "median state" to fall
+back on. `sample_run_trajectory` replaced `median_trajectory`: the chart
+now plots one real simulated run (`{name}_0`), so SoC, the "Plugged in"
+shading, and the hover's state label always agree, by construction. The
+"Population on this day" chart still covers the aggregate/percentile view
+across all runs.
 
-Reverting to linear interpolation introduced its own bug: with Plotly's
-default `hovermode="closest"`, hovering over the diagonal segment between
-two real slots showed a fabricated in-between SoC value (read off the
-drawn line's pixel position, not an actual simulated data point) paired
-with `modal_state` from whichever real point was nearest - a fictitious
-number next to a real-but-mismatched state label. Fixed by setting
-`hovermode="x"` on the individual-archetype chart, which snaps hover to
-the nearest actual x-sample instead of interpolating along the curve.
-
-That still left a deeper problem: `median_soc` (a rank-order statistic)
-and the majority-vote/modal state (a most-frequent-category statistic) are
-two independent reductions over the same 200 runs, and can genuinely
-disagree at real data points near a 50/50 split - not an interpolation
-artifact, not fixable by choosing a different "median-like" statistic for
-state (state is categorical; there's no meaningful order to take a median
-*of* - see the "why not median_state" discussion this session). Root
-fix: **`sample_run_trajectory`** replaced `median_trajectory` - the
-"Plug-in behaviour" chart now shows one real simulated run (`{name}_0`),
-not an aggregate. SoC, "Plugged in", and state all come from the exact
-same run, so they can never contradict each other, and since a single
-run's SoC genuinely is a step function (flat, then an instant real drop
-when it departs), `line_shape="hv"` is now honestly correct rather than a
-population-smoothing artifact. The "Population on this day" chart still
-covers the aggregate/percentile view across all runs.
-
-**A flat median SoC segment isn't necessarily a bug.** `median_soc` and
-`median_plugged_in` are two independent reductions over the same 200 runs -
-one a 50th-percentile SoC value, the other a majority vote on plugged-in
-state. Because runs arrive home at staggered times (the `driving_to_plugged_in`
-curve spans 17:00-21:00), it's normal for a bare majority to already count
-as "plugged in" while the median SoC value is still pinned to the
-still-driving/parked cohort's frozen value, because not enough runs have
-finished arriving-and-charging yet to move the middle of the distribution.
-This looks like "shaded but not charging" but isn't - `dominant_state()`
-in `simulation.py` now feeds the SoC line's hover tooltip with the actual
-majority state at each slot, so this is checkable at a glance instead of
-having to dig into the per-run data.
+SoC renders as a plain diagonal line between slots (matches how the
+chart looked before this investigation started); the "Plugged in" fill
+uses `line_shape="hv"` (a step), which is correct for boolean data.
+`hovermode="x"` on this chart makes hover snap to the actual half-hourly
+sample instead of interpolating a fake in-between value off the drawn
+line's pixel position, and `hoverinfo="skip"` on the "Plugged in" trace
+stops it popping its own redundant tooltip. The diagonal is a rendering
+choice, not a claim about what happens *between* samples - the
+simulation only ever computes SoC at 30-minute slot boundaries; a trip's
+whole energy cost is subtracted in the single slot its departure fires
+in, not drained gradually across however long the drive takes (see "One
+trip pattern per day" above).
