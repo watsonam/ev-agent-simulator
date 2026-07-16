@@ -180,6 +180,8 @@ class RunState:
     idle_departure_time: datetime | None = None
     parked_departure_time: datetime | None = None
     io_schedule: pd.Series | None = None
+    drive_day_date: date | None = None
+    drive_today: bool = True
 
 
 def initial_state(archetype: ArchetypeConfig, start_date: date) -> RunState:
@@ -209,6 +211,8 @@ def advance(
     idle_departure_time = run_state.idle_departure_time
     parked_departure_time = run_state.parked_departure_time
     io_schedule = run_state.io_schedule
+    drive_day_date = run_state.drive_day_date
+    drive_today = run_state.drive_today
 
     # Prefetch prices for the whole window once, not per slot.
     span_days = (end_time.date() - simulation_time.date()).days
@@ -225,6 +229,9 @@ def advance(
 
     while simulation_time < end_time:
         current_date = simulation_time.date()
+        if drive_day_date != current_date:
+            drive_day_date = current_date
+            drive_today = random() < archetype.weekday_drive_probability
         day_type = get_day_type(current_date)
         transitions = (
             archetype.weekday_transitions
@@ -291,7 +298,7 @@ def advance(
             else:
                 # Clear a stale sample so it can't leak into a future weekend.
                 idle_departure_time = None
-                if sample < get_transition_probability(curve, lookup_time):
+                if drive_today and sample < get_transition_probability(curve, lookup_time):
                     state, soc = State.DRIVING, soc - trip_soc_drop
 
         elif state == State.PARKED:
@@ -359,6 +366,8 @@ def advance(
         idle_departure_time,
         parked_departure_time,
         io_schedule,
+        drive_day_date,
+        drive_today,
     )
     return pd.DataFrame(rows).set_index("time"), new_run_state
 

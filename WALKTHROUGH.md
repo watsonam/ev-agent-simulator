@@ -226,9 +226,17 @@ message rather than silently doing less than what was asked.
   weekend daily energy, not simulated as occasional large events. Totals are
   right; the day-to-day *shape* is smoother than reality. See
   `long_trip_kwh_year` in `archetypes.py`.
-- **Scheduled charging** reuses Average UK's transition tables, so its plug-in
-  *timing* is approximate (flagged in its factory method).
+- **Scheduled charging**'s commute timing (`parked_to_driving`,
+  `driving_to_parked`, `driving_to_plugged_in`) is reused from Average UK -
+  only its morning-departure curve (`plugged_idle_to_driving`) has its own
+  table, shifted +2h so it centers on this archetype's own `plugout_time`
+  (09:00) instead of Average UK's (07:00). See `SCHEDULED_CHARGING_WEEKDAY_TRANSITIONS`
+  in `archetypes.py`.
 - **One trip pattern per day**, split into two equal legs (out and back).
+- **`infrequent_driving`'s day count is approximate.** `weekday_drive_probability=0.6`
+  is a round choice ("~3 days/week"), not solved to make its trip size exactly
+  match Average UK's (it lands at 86% of Average UK's per-trip kWh, close but
+  not identical - see below).
 
 ## Incidents worth knowing about
 
@@ -243,3 +251,26 @@ charging at £0 - which then wrecked the Savings table's baseline comparison
 for every other archetype that day. If a Savings number looks implausible,
 check whether the date in question has all 48 rows in `market_index.csv`
 before assuming it's a simulation bug.
+
+**`infrequent_driving` drove every weekday, just with smaller trips.** It
+reused Average UK's transition tables and formula unchanged - only
+`miles_per_year` was lower - so the *frequency* of driving matched Average UK
+(363 days/year) and the annual mileage difference was absorbed entirely into
+smaller trips (4.6 kWh/day vs Average UK's 8.0 kWh/day). That's a reasonable
+model but not what "infrequent" implies. Fixed by adding
+`weekday_drive_probability` to `ArchetypeConfig` (default 1.0, so every other
+archetype is unaffected): each weekday, `advance()` now samples once whether
+that day includes a commute at all (`RunState.drive_today`/`drive_day_date`),
+and `weekend_kwh_per_day`'s formula concentrates the annual weekday budget
+into only the days actually driven, so each trip that does happen is close to
+full-size (6.9 kWh vs Average UK's 8.0) rather than diluted across every day.
+`infrequent_driving` now drives ~156 weekdays/year instead of 260.
+
+**`scheduled_charging` was dropping SoC while still shown plugged in.**
+It reused Average UK's `plugged_idle_to_driving` curve unchanged, which
+fires the morning departure at 06:00-08:30 - but `scheduled_charging`'s own
+`plugout_time` is 09:00. The car was leaving (and SoC dropping) up to 2.5
+hours before its own configured plug-out time. Fixed by giving it its own
+`SCHEDULED_CHARGING_WEEKDAY_TRANSITIONS`, the same curve shifted +2h so the
+departure centers on 09:00. Its other three curves (leaving/arriving work)
+are unaffected since they're about the commute, not home charging.

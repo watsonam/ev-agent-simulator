@@ -78,6 +78,7 @@ class ArchetypeConfig:
     weekday_transitions: WeekdayTransitions
     weekend_transitions: WeekendTransitions
     charging_strategy: ChargingStrategy
+    weekday_drive_probability: float = 1.0  # fraction of weekdays actually driven, see infrequent_driving()
 
     @property
     def kwh_per_year(self) -> float:
@@ -127,7 +128,13 @@ class ArchetypeConfig:
 
     @property
     def weekend_kwh_per_day(self) -> float:
-        weighted_days = WEEKDAYS_PER_YEAR * self.weekday_weekend_ratio + WEEKEND_DAYS_PER_YEAR
+        # weekday_drive_probability < 1 concentrates the weekday budget into
+        # fewer actually-driven days, so weekday_kwh_per_day (below) comes out
+        # as a full-size trip instead of a diluted one - see infrequent_driving().
+        weighted_days = (
+            WEEKDAYS_PER_YEAR * self.weekday_weekend_ratio * self.weekday_drive_probability
+            + WEEKEND_DAYS_PER_YEAR
+        )
         return self.remaining_kwh_year / weighted_days
 
     @property
@@ -218,6 +225,26 @@ AVERAGE_UK_WEEKEND_TRANSITIONS = WeekendTransitions(
 )
 
 
+SCHEDULED_CHARGING_WEEKDAY_TRANSITIONS = WeekdayTransitions(
+    # plugged_idle_to_driving shifted +2h from average_uk's (06:00-08:30 ->
+    # 08:00-10:30) so the morning departure centers on this archetype's own
+    # plugout_time (09:00), not average_uk's (07:00). parked_to_driving/
+    # driving_to_parked/driving_to_plugged_in are about the work commute,
+    # not home charging, so they're unaffected and reused as-is.
+    plugged_idle_to_driving={
+        time(8, 0): 0.02,
+        time(8, 30): 0.14,
+        time(9, 0): 0.4,
+        time(9, 30): 0.68,
+        time(10, 0): 0.88,
+        time(10, 30): 1.0,
+    },
+    parked_to_driving=AVERAGE_UK_WEEKDAY_TRANSITIONS.parked_to_driving,
+    driving_to_parked=AVERAGE_UK_WEEKDAY_TRANSITIONS.driving_to_parked,
+    driving_to_plugged_in=AVERAGE_UK_WEEKDAY_TRANSITIONS.driving_to_plugged_in,
+)
+
+
 class ArchetypeFactory:
     @staticmethod
     def average_uk() -> ArchetypeConfig:
@@ -270,8 +297,12 @@ class ArchetypeFactory:
 
     @staticmethod
     def infrequent_driving() -> ArchetypeConfig:
-        # Same plug_in/plug_out (18:00/07:00) as average_uk - only
-        # miles_per_year is lower, so transition tables reuse cleanly.
+        # Same plug_in/plug_out (18:00/07:00) and transition tables as
+        # average_uk - "infrequent" means fewer driving days, not smaller
+        # trips, so weekday_drive_probability=0.6 (~3 days/week) skips the
+        # commute on the other weekdays entirely, while weekday_kwh_per_day
+        # comes out close to a full-size average_uk trip (not a diluted one)
+        # because the annual budget is concentrated into fewer driven days.
         return ArchetypeConfig(
             name="Infrequent driving",
             charging_strategy=ChargingStrategy.IMMEDIATE,
@@ -287,17 +318,17 @@ class ArchetypeFactory:
             long_trip_days_per_year=5,
             long_trip_miles=150,
             weekday_weekend_ratio=2.0,
+            weekday_drive_probability=0.6,
             weekday_transitions=AVERAGE_UK_WEEKDAY_TRANSITIONS,
             weekend_transitions=AVERAGE_UK_WEEKEND_TRANSITIONS,
         )
 
     @staticmethod
     def scheduled_charging() -> ArchetypeConfig:
-        # plugin_time/plugout_time (22:00/09:00) DON'T match the reused
-        # transition tables (built around 18:00/07:00) - the
-        # plugged_idle_to_driving morning ramp (6:00-8:30) is too early
-        # for a 09:00 plug-out. Reusing anyway as a placeholder; flagging
-        # this as the weakest approximation of the four new archetypes.
+        # Own weekday transitions (SCHEDULED_CHARGING_WEEKDAY_TRANSITIONS) so
+        # the morning departure matches this archetype's plugout_time (09:00),
+        # not average_uk's (07:00). Charging itself still starts at
+        # plugin_time via FIXED_TIME (see ChargingStrategy).
         return ArchetypeConfig(
             name="Scheduled charging",
             charging_strategy=ChargingStrategy.FIXED_TIME,
@@ -313,7 +344,7 @@ class ArchetypeFactory:
             long_trip_days_per_year=5,
             long_trip_miles=150,
             weekday_weekend_ratio=2.0,
-            weekday_transitions=AVERAGE_UK_WEEKDAY_TRANSITIONS,
+            weekday_transitions=SCHEDULED_CHARGING_WEEKDAY_TRANSITIONS,
             weekend_transitions=AVERAGE_UK_WEEKEND_TRANSITIONS,
         )
 
