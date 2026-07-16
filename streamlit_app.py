@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -24,6 +25,15 @@ from simulation import (
     weighted_mean,
     weighted_quantiles,
 )
+
+# The model runs on UK clock time - plug times, departure windows and Elexon
+# settlement periods are all local. The hosted server runs in UTC, so read the
+# clock in Europe/London (naive) or the app lags an hour behind in summer.
+UK_TZ = ZoneInfo("Europe/London")
+
+
+def uk_now() -> datetime:
+    return datetime.now(UK_TZ).replace(tzinfo=None)
 
 ARCHETYPE_NAMES = [
     "average_uk",
@@ -330,7 +340,7 @@ def main() -> None:
         update_day_ahead_prices(MARKET_INDEX_CSV)
     except Exception:
         pass
-    now = datetime.now()
+    now = uk_now()
     latest = latest_price_date()
     earliest = now.date() - timedelta(days=LOOKBACK_DAYS)
 
