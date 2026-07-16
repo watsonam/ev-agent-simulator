@@ -1,35 +1,69 @@
-from datetime import date, datetime, time
+import random
+from datetime import date, datetime, time, timedelta
 
-import pandas as pd
+import pytest
 
-from archetypes import FlatWindow, State
-from simulation import _next_occurrence, get_transition_probability, plugged_in_share
-
-
-def test_next_occurrence_pushes_to_next_day_when_already_past():
-    current = datetime(2026, 7, 13, 19, 30)
-    result = _next_occurrence(current, date(2026, 7, 13), time(8, 47))
-    assert result == datetime(2026, 7, 14, 8, 47)
+import archetypes
+import simulation
 
 
-def test_next_occurrence_keeps_same_day_when_still_ahead():
-    current = datetime(2026, 7, 13, 6, 0)
-    result = _next_occurrence(current, date(2026, 7, 13), time(8, 47))
-    assert result == datetime(2026, 7, 13, 8, 47)
+# These are straight off the spreadsheet (Sheet1, rows 2-7).
+SPREADSHEET = {
+    "average_uk":          dict(pop=40, miles=9435,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
+    "intelligent_octopus": dict(pop=30, miles=28105, battery=72.5, eff=3.5, freq=1.0, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
+    "infrequent_charging": dict(pop=10, miles=9435,  battery=60,   eff=3.5, freq=0.2, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
+    "infrequent_driving":  dict(pop=10, miles=5700,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
+    "scheduled_charging":  dict(pop=9,  miles=9435,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(22, 0), plugout=time(9, 0),  target=0.8),
+    "always_plugged_in":   dict(pop=1,  miles=9435,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(0, 0),  plugout=time(23, 59), target=0.8),
+}
 
 
-def test_flat_window_probability_is_zero_outside_the_window():
-    window = FlatWindow(probability=0.85, start=time(13, 0), end=time(17, 0))
-    assert get_transition_probability(window, time(12, 30)) == 0.0
-    assert get_transition_probability(window, time(13, 0)) == 0.85
-    assert get_transition_probability(window, time(17, 0)) == 0.0
+@pytest.mark.parametrize("name, s", SPREADSHEET.items())
+def test_config_matches_spreadsheet_inputs(name, s):
+    cfg = getattr(archetypes.ArchetypeFactory, name)()
+    assert cfg.population_share * 100 == s["pop"]
+    assert cfg.miles_per_year == s["miles"]
+    assert cfg.battery_kwh == s["battery"]
+    assert cfg.efficiency_mi_per_kwh == s["eff"]
+    assert cfg.plugin_frequency_per_day == s["freq"]
+    assert cfg.charger_kw == s["kw"]
+    assert cfg.plugin_time == s["plugin"]
+    assert cfg.plugout_time == s["plugout"]
+    assert cfg.target_soc == s["target"]
 
 
-def test_plugged_in_share_unweighted():
-    state_df = pd.DataFrame({
-        "run_0": [State.PLUGGED_CHARGING, State.DRIVING],
-        "run_1": [State.PLUGGED_IDLE, State.PARKED],
-    })
-    result = plugged_in_share(state_df)
-    assert result.iloc[0] == 1.0  # both runs plugged in
-    assert result.iloc[1] == 0.0  # neither run plugged in
+@pytest.mark.parametrize("name", SPREADSHEET)
+def test_population_shares_sum_to_one(name):
+    total = sum(getattr(archetypes.ArchetypeFactory, n)().population_share for n in SPREADSHEET)
+    assert total == pytest.approx(1.0)
+
+
+def test_calendar_days_sum_to_year():
+    assert archetypes.WEEKDAYS_PER_YEAR + archetypes.WEEKEND_DAYS_PER_YEAR == 365
+
+
+def test_weekday_kwh_is_ratio_times_weekend():
+    cfg = archetypes.ArchetypeFactory.average_uk()
+    assert cfg.weekday_kwh_per_day == pytest.approx(cfg.weekday_weekend_ratio * cfg.weekend_kwh_per_day)
+
+
+def test_split_trip_conserves_soc_drop():
+    random.seed(0)
+    for _ in range(100):
+        soc_after, remaining, drop_per_slot, arrival = simulation.split_trip(0.8, 0.2, {"x": 0.85})
+        assert arrival == pytest.approx(0.6)
+        assert soc_after - remaining * drop_per_slot == pytest.approx(arrival)
+
+
+def test_charging_schedule_sized_to_deficit():
+    cfg = archetypes.ArchetypeFactory.intelligent_octopus()
+    latest = simulation.latest_price_date()
+    arrival = datetime.combine(latest - timedelta(days=1), time(18, 0))
+    deadline = datetime.combine(latest, time(7, 0))
+    schedule = simulation.build_charging_schedule(cfg, arrival, 0.45, deadline)
+    assert int((schedule > 0).sum()) == 8
+
+
+def test_past_price_gap_raises():
+    with pytest.raises(ValueError):
+        simulation._prices_with_dates(date(2020, 1, 1))

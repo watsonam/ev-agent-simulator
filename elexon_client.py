@@ -39,24 +39,17 @@ class ElexonClient:
 
 
 def update_day_ahead_prices(csv_path: Path) -> date:
-    """Fetch any missing days between the CSV's latest date and tomorrow
-    (day-ahead prices for tomorrow are normally published this afternoon)
-    and append them. Cheap to call on every dashboard run: short-circuits
-    with no network call once the CSV is already up to date.
-
-    Fetching through tomorrow, not just today, matters for Intelligent
-    Octopus: its charging schedule looks up to a day past "now" to plan an
-    overnight charge, so without tomorrow's prices already in the CSV,
-    simulating "today" would fail partway through the evening."""
     existing = pd.read_csv(csv_path)
     last_date = pd.to_datetime(existing["settlementDate"]).max().date()
-    target = date.today() + timedelta(days=1)
-    if last_date >= target:
+    today = date.today()
+    target = today + timedelta(days=1)
+    start = min(today, last_date + timedelta(days=1))
+    if start > target:
         return last_date
 
     client = ElexonClient()
     new_frames = []
-    d = last_date + timedelta(days=1)
+    d = start
     while d <= target:
         df = client.get_market_index(d.strftime("%Y-%m-%d"))
         if df is not None and not df.empty:

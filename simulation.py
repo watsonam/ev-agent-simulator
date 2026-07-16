@@ -23,7 +23,7 @@ from archetypes import (
 MARKET_INDEX_CSV = Path(__file__).parent / "data" / "market_index.csv"
 CACHE_DIR = Path(__file__).parent / "data" / "cache"
 RUN_CACHE_DIR = CACHE_DIR / "runs"
-LOOKBACK_DAYS = 7  # how many days back a new run starts simulating from, before the date you actually asked for
+LOOKBACK_DAYS = 7
 
 
 class PopulationResult(TypedDict):
@@ -54,19 +54,16 @@ def get_archetype(name: str) -> ArchetypeConfig:
         raise ValueError(f"Unknown archetype '{name}'. Options: {list(_ARCHETYPES)}")
 
 
-@lru_cache(maxsize=1) # what does this do
+@lru_cache(maxsize=1)
 def _load_price_data(mtime: float) -> pd.DataFrame:
-    """market_index.csv, cached until its mtime changes. Avoids re-parsing
-    the whole file on every get_prices() call."""
     return pd.read_csv(MARKET_INDEX_CSV, parse_dates=["settlementDate"])
 
 
 def _price_data() -> pd.DataFrame:
-    return _load_price_data(MARKET_INDEX_CSV.stat().st_mtime) # and this
+    return _load_price_data(MARKET_INDEX_CSV.stat().st_mtime)
 
 
 def get_prices(d: date) -> pd.Series:
-    """Half-hourly EPEX day-ahead prices"""
     df = _price_data()
     day = df[df["settlementDate"] == pd.Timestamp(d)].sort_values("settlementPeriod")
     if day.empty:
@@ -85,20 +82,42 @@ def latest_price_date() -> date:
 
 
 def slice_day(df: pd.DataFrame, d: date) -> pd.DataFrame:
-    """Rows for calendar day `d` only, from a datetime-indexed DataFrame."""
     start = datetime.combine(d, time.min)
     return df[(df.index >= start) & (df.index < start + timedelta(days=1))]
 
 
+def _prices_or_empty(d: date) -> pd.Series:
+    try:
+        return get_prices(d)
+    except ValueError:
+        return pd.Series(dtype=float, name="price_gbp_per_mwh")
+
+
 def _prices_with_dates(d: date) -> pd.Series:
-    """get_prices(d) indexed by bare time - re-index by full datetime so two
-    days can be concatenated without same-time-of-day collisions."""
-    prices = get_prices(d)
+    # Elexon publishes tomorrow's prices late in the day, so today or tomorrow
+    # can be missing when someone loads this. I fall back to the day before
+    # rather than crash. A gap before today is a real problem, so that still raises.
+    latest = latest_price_date()
+    if d < latest:
+        prices = get_prices(d)
+    else:
+        template_date = min(d, latest)
+        prices = _prices_or_empty(template_date).combine_first(
+            _prices_or_empty(template_date - timedelta(days=1))
+        )
+        if prices.empty:
+            raise ValueError(f"No price data for {d} or the day before, in {MARKET_INDEX_CSV}")
     return pd.Series(
         prices.values,
         index=[datetime.combine(d, t) for t in prices.index],
         name=prices.name,
     )
+
+
+def prices_in_window(start: datetime, end: datetime) -> pd.Series:
+    dates = sorted({start.date(), end.date()})
+    all_prices = pd.concat([_prices_with_dates(d) for d in dates])
+    return all_prices[(all_prices.index >= start) & (all_prices.index < end)]
 
 
 def build_charging_schedule(
@@ -107,19 +126,11 @@ def build_charging_schedule(
     arrival_soc: float,
     deadline: datetime,
 ) -> pd.Series:
-    """Cheapest N half-hour slots between arrival and deadline (Intelligent
-    Octopus). Sized to the actual SoC deficit at arrival, not the archetype's
-    average - arrival_soc varies per run. Returns kWh charged per slot (0
-    where not charging)."""
     kwh_needed = max(0.0, (archetype.target_soc - arrival_soc) * archetype.battery_kwh)
     energy_per_slot = archetype.charger_kw * 0.5
     n_slots_needed = ceil(kwh_needed / energy_per_slot)
 
-    dates = sorted({arrival_time.date(), deadline.date()})
-    all_prices = pd.concat([_prices_with_dates(dd) for dd in dates])
-    window_prices = all_prices[
-        (all_prices.index >= arrival_time) & (all_prices.index < deadline)
-    ]
+    window_prices = prices_in_window(arrival_time, deadline)
 
     cheapest_slots = window_prices.nsmallest(n_slots_needed).index
     schedule = pd.Series(0.0, index=window_prices.index, name="charging_kwh")
@@ -134,9 +145,6 @@ def _minutes(t: time) -> int:
 def get_transition_probability(
     transitions: FlatWindow | dict, lookup_time: time
 ) -> float:
-    """P(transition) at this slot - for the two literal-probability curve
-    shapes only. GaussianDeparture doesn't go through here: it's sampled
-    once via sample_departure_time(), not looked up per slot."""
     if isinstance(transitions, dict):
         return transitions.get(lookup_time, 0.0)
     if isinstance(transitions, FlatWindow):
@@ -148,19 +156,44 @@ def get_transition_probability(
     raise TypeError(f"Unknown transition curve type: {type(transitions)}")
 
 
+def curve_is_enabled(curve: FlatWindow | dict) -> bool:
+    if isinstance(curve, dict):
+        return bool(curve)
+    return curve.probability > 0
+
+
+def curve_probability(curve: FlatWindow | dict) -> float:
+    if isinstance(curve, dict):
+        values = set(curve.values())
+        return next(iter(values)) if values else 0.0
+    return curve.probability
+
+
+def split_trip(
+    soc: float, trip_soc_drop: float, duration_curve: FlatWindow | dict
+) -> tuple[float, int, float, float]:
+    duration = 1 if random() < curve_probability(duration_curve) else 2
+    drop_per_slot = trip_soc_drop / duration
+    arrival_soc = max(0.0, soc - trip_soc_drop)
+    return max(0.0, soc - drop_per_slot), duration - 1, drop_per_slot, arrival_soc
+
+
+def charging_destination(archetype: ArchetypeConfig, soc: float) -> State:
+    return (
+        State.PLUGGED_CHARGING
+        if random() < archetype.plugin_frequency_per_day or soc <= archetype.plugin_soc
+        else State.PLUGGED_IDLE
+    )
+
+
 def sample_departure_time(transitions: GaussianDeparture) -> time:
-    """Draw one departure time from Normal(mean, std) - decided once, not
-    re-checked every slot. Clamped to a valid time-of-day."""
     mean_minutes = _minutes(transitions.mean)
     minutes = round(gauss(mean_minutes, transitions.std_minutes))
     minutes = max(0, min(23 * 60 + 59, minutes))
     return time(minutes // 60, minutes % 60)
 
 
-def _next_occurrence(current: datetime, day: date, clock_time: time) -> datetime:
-    """Attach `clock_time` to `day`; push to the next day if that's already
-    past `current` (a bare `time` comparison can't tell which calendar day
-    it's on)."""
+def next_occurrence(current: datetime, day: date, clock_time: time) -> datetime:
     candidate = datetime.combine(day, clock_time)
     if candidate <= current:
         candidate += timedelta(days=1)
@@ -169,11 +202,6 @@ def _next_occurrence(current: datetime, day: date, clock_time: time) -> datetime
 
 @dataclass
 class RunState:
-    """
-    Contains parameters needed to continue simulation run from a certain state. 
-    We cache previous simulations and then incrementally simulate 30 minute slots on load where missing.
-    """
-
     simulation_time: datetime
     state: State
     soc: float
@@ -182,10 +210,12 @@ class RunState:
     io_schedule: pd.Series | None = None
     drive_day_date: date | None = None
     drive_today: bool = True
+    drive_destination: State | None = None
+    trip_slots_remaining: int = 0
+    trip_drop_per_slot: float = 0.0
 
 
 def initial_state(archetype: ArchetypeConfig, start_date: date) -> RunState:
-    """Initialise state at plug in soc given archetype in spreadsheet"""
     return RunState(
         simulation_time=datetime.combine(start_date, archetype.plugin_time),
         state=State.PLUGGED_CHARGING,
@@ -196,13 +226,6 @@ def initial_state(archetype: ArchetypeConfig, start_date: date) -> RunState:
 def advance(
     archetype: ArchetypeConfig, run_state: RunState, end_time: datetime
 ) -> tuple[pd.DataFrame, RunState]:
-    """Simulate archetype forward from run_state.simulation_time to end_time.
-    Continuous - doesn't reset at midnight, so an overnight charge cycle
-    isn't cut in half. See WALKTHROUGH.md for how charging_strategy branches.
-
-    Returns (new rows only, indexed by time) and the RunState at end_time,
-    so a later call can resume exactly where this one stopped."""
-
     charge_soc_per_slot = archetype.charger_kw * 0.5 / archetype.battery_kwh
 
     simulation_time = run_state.simulation_time
@@ -213,8 +236,10 @@ def advance(
     io_schedule = run_state.io_schedule
     drive_day_date = run_state.drive_day_date
     drive_today = run_state.drive_today
+    drive_destination = run_state.drive_destination
+    trip_slots_remaining = run_state.trip_slots_remaining
+    trip_drop_per_slot = run_state.trip_drop_per_slot
 
-    # Prefetch prices for the whole window once, not per slot.
     span_days = (end_time.date() - simulation_time.date()).days
     price_dates = [
         simulation_time.date() + timedelta(days=n) for n in range(span_days + 1)
@@ -243,9 +268,7 @@ def advance(
             if day_type == "weekday"
             else archetype.weekend_kwh_per_day
         )
-        trip_soc_drop = (
-            daily_kwh / archetype.battery_kwh / 2
-        )  # 2 legs/day, split evenly
+        trip_soc_drop = daily_kwh / archetype.battery_kwh / 2
         lookup_time = time(simulation_time.hour, simulation_time.minute)
         sample = random()
         state_before = state
@@ -254,14 +277,14 @@ def advance(
         if state == State.PLUGGED_CHARGING:
             if archetype.charging_strategy == ChargingStrategy.SCHEDULED_PRICE:
                 if io_schedule is None:
-                    deadline = _next_occurrence(
+                    deadline = next_occurrence(
                         simulation_time, current_date, archetype.plugout_time
                     )
                     io_schedule = build_charging_schedule(
                         archetype, simulation_time, soc, deadline
                     )
                     print(
-                        f"  [{simulation_time}] IO schedule built: deadline={deadline} "
+                        f"[{simulation_time}] IO schedule built: deadline={deadline} "
                         f"slots={list(io_schedule[io_schedule > 0].index)}"
                     )
                 if io_schedule.get(simulation_time, 0.0) > 0:
@@ -277,7 +300,7 @@ def advance(
                     soc = min(archetype.target_soc, soc + charge_soc_per_slot)
                     if soc >= archetype.target_soc:
                         state = State.PLUGGED_IDLE
-            else:  # IMMEDIATE
+            else:
                 soc = min(archetype.target_soc, soc + charge_soc_per_slot)
                 if soc >= archetype.target_soc:
                     state = State.PLUGGED_IDLE
@@ -286,74 +309,85 @@ def advance(
             curve = transitions.plugged_idle_to_driving
             if isinstance(curve, GaussianDeparture):
                 if idle_departure_time is None:
-                    idle_departure_time = _next_occurrence(
+                    idle_departure_time = next_occurrence(
                         simulation_time, current_date, sample_departure_time(curve)
                     )
                     print(
                         f"  [{simulation_time}] sampled idle departure time: {idle_departure_time}"
                     )
                 if simulation_time >= idle_departure_time:
-                    state, soc = State.DRIVING, max(0.0, soc - trip_soc_drop)
+                    duration_curve = (
+                        transitions.driving_to_parked
+                        if curve_is_enabled(transitions.driving_to_parked)
+                        else transitions.driving_to_plugged_in
+                    )
+                    soc, trip_slots_remaining, trip_drop_per_slot, arrival_soc = split_trip(
+                        soc, trip_soc_drop, duration_curve
+                    )
+                    drive_destination = (
+                        State.PARKED
+                        if curve_is_enabled(transitions.driving_to_parked)
+                        else charging_destination(archetype, arrival_soc)
+                    )
+                    state = State.DRIVING
                     idle_departure_time = None
             else:
-                # Clear a stale sample so it can't leak into a future weekend.
                 idle_departure_time = None
                 if drive_today and sample < get_transition_probability(curve, lookup_time):
-                    state, soc = State.DRIVING, max(0.0, soc - trip_soc_drop)
+                    duration_curve = (
+                        transitions.driving_to_parked
+                        if curve_is_enabled(transitions.driving_to_parked)
+                        else transitions.driving_to_plugged_in
+                    )
+                    soc, trip_slots_remaining, trip_drop_per_slot, arrival_soc = split_trip(
+                        soc, trip_soc_drop, duration_curve
+                    )
+                    drive_destination = (
+                        State.PARKED
+                        if curve_is_enabled(transitions.driving_to_parked)
+                        else charging_destination(archetype, arrival_soc)
+                    )
+                    state = State.DRIVING
 
         elif state == State.PARKED:
             curve = transitions.parked_to_driving
             if isinstance(curve, GaussianDeparture):
                 if parked_departure_time is None:
-                    parked_departure_time = _next_occurrence(
+                    parked_departure_time = next_occurrence(
                         simulation_time, current_date, sample_departure_time(curve)
                     )
                     print(
                         f"  [{simulation_time}] sampled parked departure time: {parked_departure_time}"
                     )
                 if simulation_time >= parked_departure_time:
-                    state, soc = State.DRIVING, max(0.0, soc - trip_soc_drop)
+                    soc, trip_slots_remaining, trip_drop_per_slot, arrival_soc = split_trip(
+                        soc, trip_soc_drop, transitions.driving_to_plugged_in
+                    )
+                    drive_destination = charging_destination(archetype, arrival_soc)
+                    state = State.DRIVING
                     parked_departure_time = None
             else:
-                parked_departure_time = (
-                    None  # same leak-prevention as idle_departure_time above
-                )
+                parked_departure_time = None
                 if sample < get_transition_probability(curve, lookup_time):
-                    state, soc = State.DRIVING, max(0.0, soc - trip_soc_drop)
+                    soc, trip_slots_remaining, trip_drop_per_slot, arrival_soc = split_trip(
+                        soc, trip_soc_drop, transitions.driving_to_plugged_in
+                    )
+                    drive_destination = charging_destination(archetype, arrival_soc)
+                    state = State.DRIVING
 
         elif state == State.DRIVING:
-            if sample < get_transition_probability(
-                transitions.driving_to_parked, lookup_time
-            ):
-                state = State.PARKED
-            elif sample < get_transition_probability(
-                transitions.driving_to_plugged_in, lookup_time
-            ):
-                # plugin_frequency_per_day doubles as "P(this plug-in actually
-                # starts a charge)" - 1.0 for every archetype except
-                # infrequent_charging, so this is a no-op everywhere else.
-                # When it doesn't fire, they're still plugged in (PLUGGED_IDLE)
-                # just not drawing power, and soc keeps eroding on later trips.
-                # The soc<=plugin_soc fallback caps how low that erosion can
-                # go - plugin_soc is exactly the "arrive at this charge" level
-                # the sheet's own numbers imply, so it forces a charge once
-                # they'd hit their normal deficit rather than letting an
-                # unlucky streak of skipped plug-ins run the battery dry.
-                state = (
-                    State.PLUGGED_CHARGING
-                    if random() < archetype.plugin_frequency_per_day
-                    or soc <= archetype.plugin_soc
-                    else State.PLUGGED_IDLE
-                )
+            if trip_slots_remaining > 0:
+                soc = max(0.0, soc - trip_drop_per_slot)
+                trip_slots_remaining -= 1
+            else:
+                assert drive_destination is not None
+                state = drive_destination
+                drive_destination = None
 
         energy_delivered_kwh = (
             max(0.0, (soc - soc_before_charging)) * archetype.battery_kwh
         )
         if energy_delivered_kwh > 0:
-            # Fail loudly rather than silently pricing real energy at £0 -
-            # a date can be present in market_index.csv but missing this
-            # specific slot (a partial fetch), which get_prices()'s
-            # empty-day check doesn't catch.
             if simulation_time not in prices.index:
                 raise ValueError(f"No price for {simulation_time}, but {archetype.name} charged this slot")
             price_gbp_per_mwh = prices[simulation_time]
@@ -383,6 +417,9 @@ def advance(
         io_schedule,
         drive_day_date,
         drive_today,
+        drive_destination,
+        trip_slots_remaining,
+        trip_drop_per_slot,
     )
     return pd.DataFrame(rows).set_index("time"), new_run_state
 
@@ -390,8 +427,6 @@ def advance(
 def simulate_week(
     archetype: ArchetypeConfig, start_date: date, days: float = 7
 ) -> pd.DataFrame:
-    """One-shot simulation from a fresh start - a thin wrapper around
-    initial_state()/advance() for callers that don't need to pause/resume."""
     run_state = initial_state(archetype, start_date)
     end_time = run_state.simulation_time + timedelta(days=days)
     df, _ = advance(archetype, run_state, end_time)
@@ -401,8 +436,6 @@ def simulate_week(
 def run_monte_carlo(
     archetype: ArchetypeConfig, start_date: date, n_runs: int, days: float = 7
 ) -> dict[str, pd.DataFrame]:
-    """Repeat simulate_week n_runs times. Returns {"soc": df, "state": df,
-    "cost": df}, each shaped time x run_number."""
     soc_runs = {}
     state_runs = {}
     cost_runs = {}
@@ -423,8 +456,6 @@ def run_monte_carlo(
 def run_monte_carlo_cached(
     archetype_name: str, start_date: date, n_runs: int, days: float = 7
 ) -> dict[str, pd.DataFrame]:
-    """Same as run_monte_carlo, but caches to disk - 500 runs x 6 archetypes
-    takes minutes, no reason to recompute every time nothing's changed."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = (
         CACHE_DIR / f"{archetype_name}_{start_date}_{n_runs}runs_{days}days.pkl"
@@ -444,11 +475,6 @@ def run_monte_carlo_cached(
 def recapitulate_population(
     start_date: date, runs_per_archetype: int = 500, days: float = 7
 ) -> PopulationResult:
-    """Date-bounded population sampler, kept for the __main__ script below -
-    the dashboard uses get_population_runs instead. Every archetype runs the
-    same count regardless of population_share (rare archetypes still need
-    enough runs to characterize their own spread); weighting is applied via
-    the returned "weights" Series instead."""
     soc_columns = {}
     state_columns = {}
     cost_columns = {}
@@ -476,10 +502,6 @@ def recapitulate_population(
 def get_or_advance_run(
     archetype_name: str, run_number: int, end_dt: datetime
 ) -> pd.DataFrame:
-    """Get one Monte Carlo run's history up to `end_dt`, extending the cached
-    copy if it doesn't reach that far yet (see WALKTHROUGH.md for the full
-    picture). Raises ValueError if advance() needs a price we don't have -
-    not caught here, since that's a real data gap, not one to paper over."""
     RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = RUN_CACHE_DIR / f"{archetype_name}_{run_number}.pkl"
     archetype = get_archetype(archetype_name)
@@ -497,10 +519,9 @@ def get_or_advance_run(
         new_rows, run_state = advance(archetype, run_state, end_dt)
         trajectory = pd.concat([trajectory, new_rows])
 
-    # Atomic rename: a killed writer can't leave a truncated cache file.
-    # Suffix includes a UUID, not just the PID - Streamlit runs each user
-    # session as a thread in one shared process, so concurrent sessions have
-    # the same PID and would otherwise share (and race on) the same tmp file.
+    # I write to a temp file then rename, so a half-written cache can't be read.
+    # The temp name uses a UUID not the PID because Streamlit runs every session
+    # in the one process, so they'd share a PID and clash on the same temp file.
     tmp_path = cache_path.with_suffix(f".{uuid4().hex}.pkl.tmp")
     with open(tmp_path, "wb") as f:
         pickle.dump((trajectory, run_state), f)
@@ -509,10 +530,6 @@ def get_or_advance_run(
 
 
 def get_population_runs(end_dt: datetime, runs_per_archetype: int) -> PopulationResult:
-    """Same shape as recapitulate_population, but sourced from the
-    incremental per-run cache (get_or_advance_run) instead of re-simulating
-    a fresh date-bounded window every time. Returns full accumulated
-    history per run - callers slice_day() the day they want to look at."""
     soc_columns = {}
     state_columns = {}
     cost_columns = {}
@@ -540,10 +557,6 @@ def get_population_runs(end_dt: datetime, runs_per_archetype: int) -> Population
 def _weighted_quantile(
     values: np.ndarray, weights: np.ndarray, quantile: float
 ) -> float:
-    """One row's weighted quantile. Sorts by value, finds the midpoint of
-    each value's cumulative weight interval, then interpolates - the
-    standard way to generalize "quantile" when observations aren't equally
-    weighted."""
     order = np.argsort(values)
     values, weights = values[order], weights[order]
     cum_weights = np.cumsum(weights) - 0.5 * weights
@@ -554,9 +567,6 @@ def _weighted_quantile(
 def weighted_quantiles(
     df: pd.DataFrame, weights: pd.Series, quantiles: list[float]
 ) -> pd.DataFrame:
-    """Row-wise weighted quantiles across df's columns. `weights` maps
-    column name -> weight (from recapitulate_population's "weights").
-    Returns a DataFrame indexed like df, one column per requested quantile."""
     weight_array = weights.reindex(df.columns).to_numpy(dtype=float)
     result = {
         q: df.apply(
@@ -568,13 +578,14 @@ def weighted_quantiles(
     return pd.DataFrame(result)
 
 
+def weighted_mean(df: pd.DataFrame, weights: pd.Series) -> pd.Series:
+    weight_array = weights.reindex(df.columns).to_numpy(dtype=float)
+    return df.mul(weight_array, axis=1).sum(axis=1) / weight_array.sum()
+
+
 def plugged_in_share(
     state_df: pd.DataFrame, weights: pd.Series | None = None
 ) -> pd.Series:
-    """Fraction of runs plugged in (PLUGGED_CHARGING or PLUGGED_IDLE) at each
-    time slot, one row per slot. weights=None weights every run equally -
-    the same reduction used for a single archetype's runs and, with real
-    population weights, for the whole population."""
     plugged_in = state_df.isin([State.PLUGGED_CHARGING, State.PLUGGED_IDLE]).astype(
         float
     )
@@ -585,7 +596,7 @@ def plugged_in_share(
 
 
 if __name__ == "__main__":
-    ARCHETYPE_NAME = "average_uk"  # change this to test other archetypes
+    ARCHETYPE_NAME = "average_uk"
     START_DATE = date(2026, 6, 24)
 
     archetype = get_archetype(ARCHETYPE_NAME)
@@ -611,7 +622,6 @@ if __name__ == "__main__":
     print(f"state shape: {state_df.shape}")
     print(f"cost shape:  {cost_df.shape}")
 
-    # sanity checks - same bounds we checked by hand earlier
     bad_soc = soc_df[(soc_df < -1e-9) | (soc_df > archetype.target_soc + 1e-4)]
     print(f"\nout-of-bounds soc values: {bad_soc.count().sum()}")
     print(f"NaN soc values:           {soc_df.isna().sum().sum()}")

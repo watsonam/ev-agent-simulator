@@ -222,10 +222,25 @@ message rather than silently doing less than what was asked.
 
 ## Known simplifications
 
-- **Long trips** (e.g. 150-mile weekend drives) are folded into the average
-  weekend daily energy, not simulated as occasional large events. Totals are
-  right; the day-to-day *shape* is smoother than reality. See
-  `long_trip_kwh_year` in `archetypes.py`.
+- **Long trips are never actually simulated - and the shortfall they cause
+  is invisible on the dashboard.** `long_trip_kwh_year` (`long_trip_days_per_year`
+  x `long_trip_miles`, converted to kWh) is subtracted from an archetype's
+  annual kWh budget before splitting it into `weekday_kwh_per_day`/
+  `weekend_kwh_per_day` (see `remaining_kwh_year` in `archetypes.py`) - it's
+  *removed* from what funds routine driving, not added to any day's average.
+  Routine (non-long-trip) driving hits its own per-day target almost exactly
+  (verified directly against the simulated output), but since long trips are
+  never simulated as events, that carved-out energy is never spent by the
+  simulation at all. The result: an archetype's simulated annual mileage
+  structurally falls short of its stated `miles_per_year` by roughly its
+  long-trip share, on top of the smaller day-to-day variance every archetype
+  already has. For most archetypes (`long_trip_days_per_year=5`, ~8% of the
+  annual budget) this is a modest few points. For `infrequent_driving`
+  (`long_trip_days_per_year=10`, ~26% of its budget - see below) it's much
+  more visible: simulated annual mileage lands around 69% of target, not the
+  usual ~85-90%. This isn't a bug to fix, just a real limit of "long trips
+  aren't modeled" that's worth knowing about before reading too much into any
+  single archetype's simulated-vs-target mileage gap.
 - **Scheduled charging**'s commute timing (`parked_to_driving`,
   `driving_to_parked`, `driving_to_plugged_in`) is reused from Average UK -
   only its morning-departure curve (`plugged_idle_to_driving`) has its own
@@ -233,10 +248,15 @@ message rather than silently doing less than what was asked.
   (09:00) instead of Average UK's (07:00). See `SCHEDULED_CHARGING_WEEKDAY_TRANSITIONS`
   in `archetypes.py`.
 - **One trip pattern per day**, split into two equal legs (out and back).
-- **`infrequent_driving`'s day count is approximate.** `weekday_drive_probability=0.6`
-  is a round choice ("~3 days/week"), not solved to make its trip size exactly
-  match Average UK's (it lands at 86% of Average UK's per-trip kWh, close but
-  not identical - see below).
+- **`infrequent_driving`'s day count and trip mix are assumptions, not
+  derived values.** `weekday_drive_probability=0.5` (~2.5 days/week) and
+  `weekday_weekend_ratio=1.0` (down from Average UK's 2.0) are round
+  choices, not solved to match any particular target exactly.
+  `long_trip_days_per_year=10` (double the shared default of 5) reflects an
+  assumption that an infrequent driver's mileage skews more toward
+  occasional long trips and less toward routine commuting - see the "long
+  trips are never actually simulated" point above for what that assumption
+  actually costs in simulated annual mileage.
 
 ## Incidents worth knowing about
 
@@ -326,3 +346,83 @@ SoC at 30-minute slot boundaries; a trip's whole energy cost is
 subtracted in the single slot its departure fires in, not drained
 gradually across however long the drive takes (see "One trip pattern per
 day" above).
+
+**`DRIVING` could persist for hours with SoC flat, because it checked
+transition probability by clock time.** `driving_to_parked`/
+`driving_to_plugged_in` were only "active" (nonzero) inside fixed
+clock-time windows (e.g. 06:00-08:30). Two related problems: (1) each
+slot only had a chance (e.g. 85%) of exiting, so a run could stay
+`DRIVING` for an extra slot or two with soc unchanged, since the whole
+trip's energy is a single lump subtracted on departure, not spread across
+however long `DRIVING` happens to last; (2) worse, if departure fired on
+the very last slot of its window (or, on weekends, at a Gaussian-sampled
+time that missed the arrival window's fixed bounds entirely), the
+matching exit window was already closed by the time `DRIVING` was first
+evaluated - stranding it with 0% chance of exiting until the *other*
+window opened hours later, sometimes not until the next day. This
+predates today's fixes (`sample < 0` was equally always-false), just
+never surfaced.
+
+Fixed by deciding a trip's destination once, at the moment of departure,
+instead of re-deriving it from clock time on every subsequent slot:
+`RunState.drive_destination` is set to `PARKED` (or, if this archetype's
+`driving_to_parked` is disabled - see `curve_is_enabled()` - straight to
+`charging_destination()`, matching `always_plugged_in`'s "charges
+wherever it stops") when departing from `PLUGGED_IDLE`, or always
+`charging_destination()` when departing from `PARKED`. `driving_to_plugged_in`'s
+clock-time values are now unused for *timing* (only whether a curve is
+enabled/disabled still matters) - left in place on `WeekdayTransitions`/
+`WeekendTransitions` rather than restructuring every archetype's
+definition, given the time cost of that refactor wasn't justified today.
+
+Trip length is still variable, on purpose - the original per-slot 85%
+roll was liked, just not the flat-SoC side effect it caused. `split_trip()`
+samples a trip's length *once*, up front, from the same curve's
+probability (1 slot ~85% of the time, 2 slots the other ~15%, verified:
+sampled ratios across 1200+ trips per archetype land at 84-86%), and
+divides `trip_soc_drop` evenly across however many slots got sampled -
+`RunState.trip_slots_remaining`/`trip_drop_per_slot` carry the remainder
+forward so SoC keeps moving on every slot actually spent driving, instead
+of sitting flat for the second slot the way the old per-slot roll did.
+Each individual trip's total is exact (not just correct on average), so
+annual mileage is unaffected - verified against the same annualized-miles
+check used throughout this session (unchanged, within noise, from before
+this change). `DRIVING` is capped at exactly 2 slots for every archetype,
+never more, with no window-alignment gap possible (verified across all 6
+archetypes, 200 runs each).
+
+**Separately found, not fixed: `always_plugged_in` only completes about
+half its annual mileage.** It reuses `average_uk`'s `plugged_idle_to_driving`
+curve unchanged, which only covers the 06:00-08:30 morning window, and
+(by design) never visits `PARKED` - so it has no evening-departure curve
+to trigger a second leg home. It ends up completing one trip a day
+instead of two, on both weekdays and weekends. Pre-existing (not caused
+by the `DRIVING` fix above); flagged for a follow-up since it's a low
+population-share (1%) archetype.
+
+Tried folding the evening/afternoon departure window into
+`plugged_idle_to_driving` (weekday) so the second trip could fire from
+wherever this archetype actually ends up. Made mileage worse, not
+better - 110% of target instead of 54%, with some days firing 3-4 trips
+instead of 2. Cause: every other archetype departs and then sits in
+`PARKED` for hours, so its departure window is only ever checked once.
+`always_plugged_in` resolves a trip and charges back up in 1-2 slots, so
+it can land back in `PLUGGED_IDLE` while the *same* wide (2.5-3hr)
+departure window is still open, and that window's remaining probability
+mass can fire again. Reverted rather than add the "already departed this
+window today" bookkeeping a proper fix needs - out of scope for the time
+available. The one-trip-a-day shortfall stands as a known, documented
+limitation for this archetype.
+
+**Prices for today or later can fall back to the day before.** Elexon
+publishes tomorrow's day-ahead prices during the afternoon before, and
+today's own settlement prices lag "now" by a publishing delay - so any
+archetype's simulated clock can reach a slot (this evening, or
+Intelligent Octopus planning its overnight schedule into tomorrow
+morning) that isn't priced yet. Rather than crash, `_prices_with_dates()`
+backfills any missing slot in today-or-later from the same time-of-day
+the day before, which is always fully settled by then. This means prices
+shown for the tail end of today, or all of an unpublished tomorrow, may
+be yesterday's curve rather than the real one, until Elexon's own data
+catches up. A gap in a date *before* today still raises an error, since
+that's a real data problem rather than a publishing-time one.

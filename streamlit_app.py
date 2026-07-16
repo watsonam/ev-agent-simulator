@@ -12,12 +12,16 @@ from simulation import (
     MARKET_INDEX_CSV,
     RUN_CACHE_DIR,
     PopulationResult,
+    build_charging_schedule,
     get_archetype,
     get_population_runs,
     get_prices,
     latest_price_date,
+    next_occurrence,
     plugged_in_share,
+    prices_in_window,
     slice_day,
+    weighted_mean,
     weighted_quantiles,
 )
 
@@ -29,10 +33,9 @@ ARCHETYPE_NAMES = [
     "scheduled_charging",
     "always_plugged_in",
 ]
-RUNS_PER_ARCHETYPE = 200  # cheap: runs are cached and extended, not recomputed each view
-EVENING_START = time(18, 0)  # both timeline charts start here the day before, for overnight context
+RUNS_PER_ARCHETYPE = 200
+EVENING_START = time(18, 0)
 
-# Shared palette - one look across all charts, not styled per-chart.
 COLOR_SOC = "#1864ab"
 COLOR_BAND_EDGE = "#74c0fc"
 COLOR_BAND_FILL = "rgba(24, 100, 171, 0.12)"
@@ -42,8 +45,6 @@ COLOR_PRICE = "#495057"
 COLOR_TODAY_MARKER = "#868e96"
 COLOR_WEEKEND = "#845ef7"
 
-
-# --- Pure data helpers -------------------------------------------------
 
 def auto_range(values, pad_frac: float = 0.1) -> list[float]:
     lo, hi = float(values.min()), float(values.max())
@@ -60,8 +61,6 @@ def slice_window(df: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFra
 
 
 def sim_window(sim_date: date, now: datetime) -> tuple[datetime, datetime, datetime]:
-    """(start, midnight, end) of the chart window: 6pm the day before, the
-    sim_date/T-1 boundary, and now (or end of sim_date if it's a past date)."""
     start = datetime.combine(sim_date - timedelta(days=1), EVENING_START)
     midnight = datetime.combine(sim_date, time.min)
     if sim_date == now.date():
@@ -76,9 +75,6 @@ def time_note(sim_date: date, now: datetime) -> str:
 
 
 def is_cache_cold(runs_per_archetype: int) -> bool:
-    """Rough check for whether this load is about to pay the full simulation
-    cost (few or no cached runs yet) rather than just extending existing
-    ones - used to set an honest spinner message, not to change behaviour."""
     if not RUN_CACHE_DIR.exists():
         return True
     cached = len(list(RUN_CACHE_DIR.glob("*.pkl")))
@@ -86,8 +82,6 @@ def is_cache_cold(runs_per_archetype: int) -> bool:
 
 
 def _require_rows(df: pd.DataFrame, population: PopulationResult, window_start: datetime, end_dt: datetime) -> None:
-    """Fail clearly if the window is before the cache's earliest data,
-    instead of an empty DataFrame crashing later with no useful message."""
     if df.empty:
         cached_from = population["soc"].index.min()
         raise ValueError(
@@ -97,13 +91,6 @@ def _require_rows(df: pd.DataFrame, population: PopulationResult, window_start: 
 
 
 def sample_run_trajectory(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """SoC, plugged-in status, and state from a single real simulated run
-    (run 0) for one archetype - not an aggregate. A median-across-runs and a
-    majority-vote-across-runs are two independent statistics that can
-    genuinely disagree (e.g. mid-departure, when the population is split
-    close to 50/50); showing one real run instead means SoC and state always
-    come from the same driver's day and can never contradict each other.
-    The "Population on this day" chart already covers the aggregate view."""
     run_col = f"{name}_0"
     soc_run = slice_window(population["soc"][[run_col]], window_start, end_dt)[run_col]
     state_run = slice_window(population["state"][[run_col]], window_start, end_dt)[run_col]
@@ -112,21 +99,37 @@ def sample_run_trajectory(population: PopulationResult, name: str, window_start:
     return soc_run, plugged_in, state_run.map(lambda s: s.name)
 
 
+def charging_session_window(state: pd.Series, archetype: ArchetypeConfig) -> tuple[datetime, datetime] | None:
+    charging = state == "PLUGGED_CHARGING"
+    arrivals = charging & ~charging.shift(1, fill_value=False)
+    if not arrivals.any():
+        return None
+    arrival_time = arrivals[arrivals].index[-1]
+    deadline = next_occurrence(arrival_time, arrival_time.date(), archetype.plugout_time)
+    return arrival_time, deadline
+
+
+def scheduled_slots(archetype: ArchetypeConfig, arrival: datetime, arrival_soc: float, deadline: datetime) -> pd.DataFrame:
+    schedule = build_charging_schedule(archetype, arrival, arrival_soc, deadline)
+    charged = schedule[schedule > 0].index
+    prices = prices_in_window(arrival, deadline).reindex(charged)
+    return pd.DataFrame({"Time": prices.index.strftime("%a %H:%M"), "£/MWh": prices.values})
+
+
 def population_summary(population: PopulationResult, window_start: datetime, end_dt: datetime) -> tuple[pd.DataFrame, pd.Series]:
-    """Weighted SoC percentile bands and weighted %-plugged-in, across all archetypes."""
     weights = population["weights"]
     pop_soc = slice_window(population["soc"], window_start, end_dt)
     pop_state = slice_window(population["state"], window_start, end_dt)
     _require_rows(pop_soc, population, window_start, end_dt)
 
     pct_plugged_in = plugged_in_share(pop_state, weights) * 100
-    bands = weighted_quantiles(pop_soc, weights, [0.05, 0.5, 0.95])
-    bands.columns = ["p05", "p50", "p95"]
+    bands = weighted_quantiles(pop_soc, weights, [0.05, 0.95])
+    bands.columns = ["p05", "p95"]
+    bands["mean"] = weighted_mean(pop_soc, weights)
     return bands, pct_plugged_in
 
 
 def cost_totals(population: PopulationResult, name: str, archetype: ArchetypeConfig, d: date) -> tuple[pd.Series, pd.Series]:
-    """Per-run total cost and kWh delivered on day `d`, one value per run."""
     day_soc = slice_day(archetype_columns(population["soc"], name), d)
     day_cost = slice_day(archetype_columns(population["cost"], name), d)
     total_kwh = day_soc.diff().clip(lower=0).sum() * archetype.battery_kwh
@@ -135,8 +138,6 @@ def cost_totals(population: PopulationResult, name: str, archetype: ArchetypeCon
 
 
 def savings_row(population: PopulationResult, name: str, archetype: ArchetypeConfig, sim_date: date, earliest: date) -> dict:
-    """£/kWh, averaged across whichever runs actually charged that day. Falls
-    back to the previous day if none did yet (e.g. a partial "today")."""
     total_cost, total_kwh = cost_totals(population, name, archetype, sim_date)
     day_shown = sim_date
     fallback_date = sim_date - timedelta(days=1)
@@ -162,21 +163,16 @@ def savings_table(population: PopulationResult, archetypes: dict[str, ArchetypeC
     return df
 
 
-# --- Chart builders (pure: data in, go.Figure out) ----------------------
-
 def mark_today(fig: go.Figure, midnight: datetime) -> None:
-    """Vertical line + label at midnight, separating T-1 from sim_date."""
     fig.add_vline(x=midnight, line_dash="dash", line_color=COLOR_TODAY_MARKER)
     fig.add_annotation(x=midnight, y=1.03, yref="paper", showarrow=False, text="T-1 | Today", font=dict(size=11, color=COLOR_TODAY_MARKER))
 
 
 def mark_weekends(fig: go.Figure, index: pd.DatetimeIndex) -> None:
-    """Light shading behind Saturday/Sunday - weekend transition tables
-    differ (errands, not commutes), so this should be visible at a glance."""
     start, end = index.min(), index.max()
     day = start.date()
     while day <= end.date():
-        if day.weekday() == 5:  # Saturday
+        if day.weekday() == 5:
             span_start = max(start, datetime.combine(day, time.min))
             span_end = min(end, datetime.combine(day + timedelta(days=2), time.min))
             if span_start < span_end:
@@ -188,7 +184,7 @@ def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, mid
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     plugged_in_label = plugged_in.map({1.0: "Yes", 0.0: "No"})
     fig.add_trace(go.Scatter(
-        x=soc.index, y=plugged_in, mode="lines", fill="tozeroy",
+        x=soc.index, y=plugged_in, mode="lines", line_shape="vh", fill="tozeroy",
         fillcolor=COLOR_OCCUPANCY_FILL, line=dict(width=0), name="Plugged in",
         customdata=plugged_in_label, hovertemplate="Plugged in: %{customdata}<extra></extra>",
     ), secondary_y=True)
@@ -218,8 +214,8 @@ def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midni
         name="p05-p95 range", hovertemplate="p95: %{y:.3f}<extra></extra>",
     ), secondary_y=False)
     fig.add_trace(go.Scatter(
-        x=bands.index, y=bands["p50"], mode="lines", line=dict(color=COLOR_SOC, width=2.5),
-        name="Median SoC", hovertemplate="median: %{y:.3f}<extra></extra>",
+        x=bands.index, y=bands["mean"], mode="lines", line=dict(color=COLOR_SOC, width=2.5),
+        name="Mean SoC", hovertemplate="mean: %{y:.3f}<extra></extra>",
     ), secondary_y=False)
     fig.add_trace(go.Bar(
         x=pct_plugged_in.index, y=pct_plugged_in.values, name="% plugged in",
@@ -228,7 +224,7 @@ def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midni
 
     soc_lo = min(float(bands.to_numpy().min()), 1.0)
     soc_pad = max((1.0 - soc_lo) * 0.08, 0.01)
-    fig.update_yaxes(title_text="SoC (weighted percentile)", range=[soc_lo - soc_pad, 1.0], gridcolor="rgba(0,0,0,0.06)", secondary_y=False)
+    fig.update_yaxes(title_text="SoC (weighted mean, p05-p95 range)", range=[soc_lo - soc_pad, 1.0], gridcolor="rgba(0,0,0,0.06)", secondary_y=False)
     fig.update_yaxes(title_text="% plugged in", range=auto_range(pct_plugged_in), showgrid=False, secondary_y=True)
     fig.update_layout(
         xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"), hovermode="x unified",
@@ -255,8 +251,6 @@ def savings_column_config() -> dict:
     }
 
 
-# --- Streamlit rendering (imperative shell: one function per section) --
-
 def render_controls(now: datetime, latest: date, earliest: date) -> tuple[date, str]:
     archetypes = {name: get_archetype(name) for name in ARCHETYPE_NAMES}
     cols = st.columns(2)
@@ -273,9 +267,24 @@ def render_controls(now: datetime, latest: date, earliest: date) -> tuple[date, 
 
 
 def render_plugin_behaviour(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime, midnight: datetime) -> None:
-    st.header("Plug-in behaviour")
-    st.caption("One simulated run (not an average) - see 'Population on this day' below for the aggregate view.")
     soc, plugged_in, state = sample_run_trajectory(population, name, window_start, end_dt)
+
+    st.header("Plug-in behaviour")
+    if name == "intelligent_octopus":
+        archetype = get_archetype(name)
+        session = charging_session_window(state, archetype)
+        if session is not None:
+            arrival, deadline = session
+            pos = soc.index.get_loc(arrival)
+            arrival_soc = soc.iloc[pos - 1] if pos > 0 else soc.iloc[pos]
+            slots = scheduled_slots(archetype, arrival, arrival_soc, deadline)
+            slots_text = ", ".join(f"{row.Time} ({row._2:.2f})" for row in slots.itertuples())
+            st.caption(
+                f"Charging slots between {arrival.strftime('%a %H:%M')} and "
+                f"{deadline.strftime('%a %H:%M')} (£/MWh): {slots_text}"
+            )
+        else:
+            st.caption("Didn't plug in and charge within this window.")
     st.plotly_chart(build_soc_chart(soc, plugged_in, state, midnight), width="stretch")
 
 
@@ -316,7 +325,7 @@ def main() -> None:
     update_day_ahead_prices(MARKET_INDEX_CSV)
     now = datetime.now()
     latest = latest_price_date()
-    earliest = now.date() - timedelta(days=LOOKBACK_DAYS)  # matches what the cache guarantees
+    earliest = now.date() - timedelta(days=LOOKBACK_DAYS)
 
     sim_date, selected_name = render_controls(now, latest, earliest)
     archetypes = {name: get_archetype(name) for name in ARCHETYPE_NAMES}
