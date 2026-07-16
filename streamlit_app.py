@@ -114,8 +114,10 @@ def sample_run_trajectory(population: PopulationResult, name: str, window_start:
 
 
 def charging_session_window(state: pd.Series, archetype: ArchetypeConfig) -> tuple[datetime, datetime] | None:
-    charging = state == "PLUGGED_CHARGING"
-    arrivals = charging & ~charging.shift(1, fill_value=False)
+    # Arrival is when the car plugs in (enters any plugged state), not when it
+    # starts drawing power - a scheduled charger's window opens at plug-in.
+    plugged = state.isin(["PLUGGED_CHARGING", "PLUGGED_IDLE"])
+    arrivals = plugged & ~plugged.shift(1, fill_value=False)
     if not arrivals.any():
         return None
     arrival_time = arrivals[arrivals].index[-1]

@@ -397,7 +397,16 @@ def advance(
             f"  [{simulation_time}] {day_type:7s} state={state.name:16s} soc={soc:.4f}{cost_note}{marker}"
         )
 
-        rows.append({"time": simulation_time, "state": state, "soc": soc, "cost": cost})
+        # Report PLUGGED_CHARGING only when power actually flows this slot. A
+        # scheduled/price charger sits plugged in but idle until its cheap
+        # slots come round - internally it stays in the charging state so the
+        # schedule keeps running, but the recorded state should read IDLE while
+        # SoC is flat, not CHARGING.
+        if state in (State.PLUGGED_CHARGING, State.PLUGGED_IDLE):
+            logged_state = State.PLUGGED_CHARGING if energy_delivered_kwh > 0 else State.PLUGGED_IDLE
+        else:
+            logged_state = state
+        rows.append({"time": simulation_time, "state": logged_state, "soc": soc, "cost": cost})
         simulation_time += timedelta(minutes=30)
 
     new_run_state = RunState(

@@ -68,6 +68,26 @@ def test_past_price_gap_raises():
         simulation._prices_with_dates(date(2020, 1, 1))
 
 
+def test_plugged_charging_only_when_power_flows():
+    # A scheduled/price charger sits plugged in but idle until its cheap slots.
+    # A slot should only read PLUGGED_CHARGING when it actually charged (cost>0).
+    import contextlib, io
+    cfg = archetypes.ArchetypeFactory.intelligent_octopus()
+    latest = simulation.latest_price_date()
+    rs = simulation.RunState(
+        simulation_time=datetime.combine(latest - timedelta(days=1), time(18, 0)),
+        state=simulation.State.PLUGGED_CHARGING,
+        soc=0.455,
+    )
+    with contextlib.redirect_stdout(io.StringIO()):
+        df, _ = simulation.advance(cfg, rs, datetime.combine(latest, time(8, 0)))
+    states = df["state"].map(lambda s: s.name)
+    charging = states == "PLUGGED_CHARGING"
+    assert charging.any()
+    assert (df.loc[charging, "cost"] > 0).all()
+    assert (states.iloc[:4] == "PLUGGED_IDLE").all()
+
+
 def test_sample_run_trajectory_drops_leading_nan():
     # Near the earliest date the view window starts before a run's first slot,
     # so the aligned population has leading NaN rows - these must be dropped,
