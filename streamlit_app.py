@@ -15,6 +15,7 @@ from simulation import (
     PopulationResult,
     build_charging_schedule,
     get_archetype,
+    get_day_type,
     get_population_runs,
     get_prices,
     latest_price_date,
@@ -271,10 +272,10 @@ def render_controls(now: datetime, latest: date, earliest: date) -> tuple[date, 
     return sim_date, selected_name
 
 
-def render_plugin_behaviour(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime, midnight: datetime) -> None:
+def render_plugin_behaviour(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime, midnight: datetime, day_type: str) -> None:
     soc, plugged_in, state = sample_run_trajectory(population, name, window_start, end_dt)
 
-    st.header("Plug-in behaviour")
+    st.header(f"Plug-in behaviour ({day_type})")
     if name == "intelligent_octopus":
         archetype = get_archetype(name)
         session = charging_session_window(state, archetype)
@@ -293,8 +294,8 @@ def render_plugin_behaviour(population: PopulationResult, name: str, window_star
     st.plotly_chart(build_soc_chart(soc, plugged_in, state, midnight), width="stretch")
 
 
-def render_population(population: PopulationResult, window_start: datetime, end_dt: datetime, midnight: datetime, note: str) -> None:
-    st.header("Population on this day")
+def render_population(population: PopulationResult, window_start: datetime, end_dt: datetime, midnight: datetime, note: str, day_type: str) -> None:
+    st.header(f"Population on this day ({day_type})")
     st.caption(
         f"Mean state of charge (5th-95th percentile band) and the share of cars plugged in, "
         f"across all 6 archetypes weighted by population share ({RUNS_PER_ARCHETYPE} runs each). "
@@ -351,8 +352,9 @@ def main() -> None:
     with st.spinner(spinner_text):
         population = get_population_runs(end_dt, RUNS_PER_ARCHETYPE)
 
-    render_plugin_behaviour(population, selected_name, window_start, end_dt, midnight)
-    render_population(population, window_start, end_dt, midnight, note)
+    day_type = get_day_type(sim_date)
+    render_plugin_behaviour(population, selected_name, window_start, end_dt, midnight, day_type)
+    render_population(population, window_start, end_dt, midnight, note, day_type)
     render_savings(population, archetypes)
     render_price_curve(sim_date)
 
