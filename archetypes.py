@@ -245,7 +245,10 @@ class ArchetypeFactory:
         # Sheet note: "someone who doesn't drive to work but does a fair
         # amount of travelling at the weekend" - no weekday commute at all
         # (see INFREQUENT_CHARGING_WEEKDAY_TRANSITIONS), weekend errand trip
-        # reused unchanged from average_uk.
+        # reused unchanged from average_uk. weekday_weekend_ratio=0 (not
+        # average_uk's 2.0) because weekday driving is impossible here - the
+        # whole annual mileage budget has to land on weekend_kwh_per_day, or
+        # most of it is computed into weekday_kwh_per_day and never spent.
         return ArchetypeConfig(
             name="Infrequent charging",
             charging_strategy=ChargingStrategy.IMMEDIATE,
@@ -260,7 +263,7 @@ class ArchetypeFactory:
             target_soc=0.8,
             long_trip_days_per_year=5,
             long_trip_miles=150,
-            weekday_weekend_ratio=2.0,
+            weekday_weekend_ratio=0.0,
             weekday_transitions=INFREQUENT_CHARGING_WEEKDAY_TRANSITIONS,
             weekend_transitions=AVERAGE_UK_WEEKEND_TRANSITIONS,
         )

@@ -1,3 +1,4 @@
+import os
 import pickle
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -55,12 +56,8 @@ def get_archetype(name: str) -> ArchetypeConfig:
 
 @lru_cache(maxsize=1)
 def _load_price_data(mtime: float) -> pd.DataFrame:
-    """market_index.csv, parsed once per mtime. `mtime` is the cache key, so
-    a call with the same mtime returns the cached DataFrame instead of
-    re-reading the file; a new mtime (update_day_ahead_prices appended rows)
-    evicts it and reads fresh. Without this, get_prices() re-read and
-    re-parsed the whole ~9,000-row file on every call - the dominant cost
-    when advancing hundreds of Monte Carlo runs."""
+    """market_index.csv, cached until its mtime changes. Avoids re-parsing
+    the whole file on every get_prices() call."""
     return pd.read_csv(MARKET_INDEX_CSV, parse_dates=["settlementDate"])
 
 
@@ -110,15 +107,10 @@ def build_charging_schedule(
     arrival_soc: float,
     deadline: datetime,
 ) -> pd.Series:
-    """Cheapest-slots schedule for archetypes with price-driven charging
-    (Intelligent Octopus). Sized to the ACTUAL SoC deficit at arrival - not
-    archetype.kwh_per_plugin, which is only a population average - because
-    in the continuous simulation, arrival_soc is an emergent per-run result
-    that varies. Picks the N cheapest half-hour slots between arrival_time
-    and deadline using real EPEX day-ahead prices. Average UK-style "charge
-    immediately" archetypes don't need this - simulate_week's
-    PLUGGED_CHARGING ramp already encodes that directly. Returns a Series
-    of kWh charged per slot (0 where not charging)."""
+    """Cheapest N half-hour slots between arrival and deadline (Intelligent
+    Octopus). Sized to the actual SoC deficit at arrival, not the archetype's
+    average - arrival_soc varies per run. Returns kWh charged per slot (0
+    where not charging)."""
     kwh_needed = max(0.0, (archetype.target_soc - arrival_soc) * archetype.battery_kwh)
     energy_per_slot = archetype.charger_kw * 0.5
     n_slots_needed = ceil(kwh_needed / energy_per_slot)
@@ -166,11 +158,9 @@ def sample_departure_time(transitions: GaussianDeparture) -> time:
 
 
 def _next_occurrence(current: datetime, day: date, clock_time: time) -> datetime:
-    """Attach `clock_time` to `day`; if that's already in the past relative
-    to `current`, push it to the next day instead. Needed because a bare
-    `time` comparison across a midnight crossing is wrong - it has no
-    notion of which calendar day it's on (e.g. 19:30 this evening would
-    compare as "later than" 08:47 tomorrow morning, purely by clock value)."""
+    """Attach `clock_time` to `day`; push to the next day if that's already
+    past `current` (a bare `time` comparison can't tell which calendar day
+    it's on)."""
     candidate = datetime.combine(day, clock_time)
     if candidate <= current:
         candidate += timedelta(days=1)
@@ -205,20 +195,11 @@ def advance(
     archetype: ArchetypeConfig, run_state: RunState, end_time: datetime
 ) -> tuple[pd.DataFrame, RunState]:
     """Simulate archetype forward from run_state.simulation_time to end_time.
-    Does NOT reset state at midnight, so the overnight plug-in-to-departure
-    cycle isn't chopped in half at a day boundary.
+    Continuous - doesn't reset at midnight, so an overnight charge cycle
+    isn't cut in half. See WALKTHROUGH.md for how charging_strategy branches.
 
-    archetype.charging_strategy decides what happens once PLUGGED_CHARGING:
-      IMMEDIATE - ramp every slot (deterministic), same as before.
-      SCHEDULED_PRICE (Intelligent Octopus) - build a real EPEX cheapest-
-        slots schedule against the ACTUAL arrival time/SoC (not the
-        archetype average) and only add energy in scheduled slots.
-      FIXED_TIME (Scheduled charging) - sit in PLUGGED_CHARGING without
-        gaining SoC until archetype.plugin_time, then ramp normally.
-
-    Returns (new rows only, indexed by time with `state`/`soc`/`cost`
-    columns) and the RunState at end_time, so a later call can resume
-    exactly where this one stopped."""
+    Returns (new rows only, indexed by time) and the RunState at end_time,
+    so a later call can resume exactly where this one stopped."""
 
     charge_soc_per_slot = archetype.charger_kw * 0.5 / archetype.battery_kwh
 
@@ -229,8 +210,7 @@ def advance(
     parked_departure_time = run_state.parked_departure_time
     io_schedule = run_state.io_schedule
 
-    # Prefetch prices for the whole window once - calling get_prices() (which
-    # re-reads the CSV) every slot would be wasteful.
+    # Prefetch prices for the whole window once, not per slot.
     span_days = (end_time.date() - simulation_time.date()).days
     price_dates = [
         simulation_time.date() + timedelta(days=n) for n in range(span_days + 1)
@@ -309,9 +289,7 @@ def advance(
                     state, soc = State.DRIVING, soc - trip_soc_drop
                     idle_departure_time = None
             else:
-                # Not a Gaussian day (e.g. weekday dict after a weekend
-                # Gaussian sample) - clear any stale sample so it can't
-                # leak into a future weekend and fire instantly there.
+                # Clear a stale sample so it can't leak into a future weekend.
                 idle_departure_time = None
                 if sample < get_transition_probability(curve, lookup_time):
                     state, soc = State.DRIVING, soc - trip_soc_drop
@@ -390,13 +368,8 @@ def simulate_week(
 def run_monte_carlo(
     archetype: ArchetypeConfig, start_date: date, n_runs: int, days: float = 7
 ) -> dict[str, pd.DataFrame]:
-    """Repeat simulate_week n_runs times. Every run shares the same time
-    index (simulate_week steps a fixed 30-min grid regardless of state, so
-    there's nothing to align), so we just collect each run's soc/state/cost
-    column into its own dict and wrap each into a wide DataFrame at the end.
-
-    Returns {"soc": df, "state": df, "cost": df}, each shaped time x run_number.
-    """
+    """Repeat simulate_week n_runs times. Returns {"soc": df, "state": df,
+    "cost": df}, each shaped time x run_number."""
     soc_runs = {}
     state_runs = {}
     cost_runs = {}
@@ -438,23 +411,11 @@ def run_monte_carlo_cached(
 def recapitulate_population(
     start_date: date, runs_per_archetype: int = 500, days: float = 7
 ) -> PopulationResult:
-    """Combines all 6 archetypes into one population-level sample for the
-    "recapitulate population-level observations" chart from the brief.
-
-    Every archetype gets the SAME number of runs (runs_per_archetype), not
-    a count proportional to population_share - a rare archetype like Always
-    plugged-in (1%) still needs enough of its own runs to characterize its
-    own spread; population weighting is applied separately at aggregation
-    time (see weighted_quantiles) via the "weights" Series in the return
-    value, rather than being baked into how many times each archetype runs.
-
-    Columns keep their real datetime index. Every archetype's plugin_time is
-    a multiple of 30 minutes, so all archetypes land on the same half-hourly
-    grid despite starting at different clock times (18:00, 22:00, 00:00) -
-    pooling on the raw datetime index is safe, and lets callers slice the
-    result down to a single calendar day (see slice_day) for a "population
-    right now" view rather than only a whole-week one.
-    """
+    """Date-bounded population sampler, kept for the __main__ script below -
+    the dashboard uses get_population_runs instead. Every archetype runs the
+    same count regardless of population_share (rare archetypes still need
+    enough runs to characterize their own spread); weighting is applied via
+    the returned "weights" Series instead."""
     soc_columns = {}
     state_columns = {}
     cost_columns = {}
@@ -463,9 +424,6 @@ def recapitulate_population(
     for name in _ARCHETYPES:
         archetype = get_archetype(name)
         result = run_monte_carlo_cached(name, start_date, runs_per_archetype, days=days)
-        # Each run's weight is population_share split evenly across this
-        # archetype's runs, so summing all of Average UK's run weights
-        # gives back exactly 0.40 (its population_share).
         weight_per_run = archetype.population_share / runs_per_archetype
         for run_number in result["soc"].columns:
             key = f"{name}_{run_number}"
@@ -485,28 +443,10 @@ def recapitulate_population(
 def get_or_advance_run(
     archetype_name: str, run_number: int, end_dt: datetime
 ) -> pd.DataFrame:
-    """Get one Monte Carlo run's full history up to `end_dt`, extending it if
-    the cached copy doesn't reach that far yet. This is where the incremental
-    cache lives - the reason changing the date in the dashboard is fast.
-
-    Each (archetype, run_number) pair owns one pickle file holding two things:
-      - trajectory: every 30-min row simulated so far (state, soc, cost)
-      - run_state:  a snapshot of where the run paused (time, soc, state, and
-                    any half-finished Intelligent Octopus charging schedule)
-
-    Steps:
-      1. Load that file if it exists; otherwise start a fresh run LOOKBACK_DAYS
-         before end_dt
-      2. If the run hasn't reached end_dt, advance() it the rest of the way and
-         append the new rows. If the cache is already past end_dt, do nothing.
-      3. Save the extended (trajectory, run_state) back to the same file.
-
-    Raises ValueError if advance() needs a price we don't have (e.g. tomorrow's
-    day-ahead prices haven't been published yet) - that's a real data gap, not
-    something to silently paper over, so it's left to fail rather than caught.
-
-    Returns the whole accumulated trajectory
-    """
+    """Get one Monte Carlo run's history up to `end_dt`, extending the cached
+    copy if it doesn't reach that far yet (see WALKTHROUGH.md for the full
+    picture). Raises ValueError if advance() needs a price we don't have -
+    not caught here, since that's a real data gap, not one to paper over."""
     RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = RUN_CACHE_DIR / f"{archetype_name}_{run_number}.pkl"
     archetype = get_archetype(archetype_name)
@@ -524,11 +464,11 @@ def get_or_advance_run(
         new_rows, run_state = advance(archetype, run_state, end_dt)
         trajectory = pd.concat([trajectory, new_rows])
 
-    # Write to a temp file then rename into place, so a process kill
-    # mid-write can never leave a truncated, permanently-unreadable cache
-    # file at cache_path - the rename is atomic, the old file stays intact
-    # until the new one is fully written.
-    tmp_path = cache_path.with_suffix(".pkl.tmp")
+    # Atomic rename: a killed process can't leave a truncated cache file.
+    # Suffix includes the PID so two concurrent writers (e.g. Streamlit's
+    # autoreload overlapping a script rerun mid-write) never share a tmp
+    # file and race each other's replace().
+    tmp_path = cache_path.with_suffix(f".{os.getpid()}.pkl.tmp")
     with open(tmp_path, "wb") as f:
         pickle.dump((trajectory, run_state), f)
     tmp_path.replace(cache_path)
