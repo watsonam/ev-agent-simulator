@@ -15,7 +15,7 @@ rather than recomputed, then the dashboard reads those runs back and draws them.
 | `archetypes.py` | The **inputs**. Six driver types and their numbers (mileage, battery, plug-in times, transition probabilities). Pure config, no simulation logic. |
 | `simulation.py` | The **engine**. The state machine, the Monte Carlo loop, the disk cache, and the weighted-percentile maths. |
 | `elexon_client.py` | The **prices**. Fetches EPEX day-ahead electricity prices and keeps `data/market_index.csv` up to date. |
-| `dashboard.py` | The **view**. Streamlit UI: reads the runs, slices the window it needs, draws the charts. No simulation logic, and no statistics beyond what `simulation.py` already provides. |
+| `streamlit_app.py` | The **view**. Streamlit UI: reads the runs, slices the window it needs, draws the charts. No simulation logic, and no statistics beyond what `simulation.py` already provides. |
 
 Data flows one way: `archetypes → simulation → dashboard`. Prices feed in from
 `elexon_client`. The dashboard never simulates; it only reads and plots.
@@ -139,14 +139,14 @@ Both live in `simulation.py`, next to each other, and both take an optional
   plugged in per slot. Uniform weights → one archetype's own share; population
   weights → the whole population's share.
 
-`dashboard.py` never recomputes these - it only decides *which weights to pass*:
+`streamlit_app.py` never recomputes these - it only decides *which weights to pass*:
 uniform for a single archetype's "typical day" view, `population["weights"]`
 for the population view. That's the only difference between the two charts'
 underlying maths.
 
 ---
 
-## 3. The dashboard (`dashboard.py`)
+## 3. The dashboard (`streamlit_app.py`)
 
 Structured in three layers, top to bottom in the file:
 
@@ -180,9 +180,9 @@ out the time window → fetch the population once → render each section.
 **Add a new archetype.** In `archetypes.py`, add a factory method returning an
 `ArchetypeConfig` (copy an existing one, change the numbers/transition tables),
 then add it to `_ARCHETYPES` in `simulation.py` and `ARCHETYPE_NAMES` in
-`dashboard.py`. Delete `data/cache/runs/` so it re-simulates with the new type.
+`streamlit_app.py`. Delete `data/cache/runs/` so it re-simulates with the new type.
 
-**Change the number of runs.** `RUNS_PER_ARCHETYPE` in `dashboard.py`. More runs
+**Change the number of runs.** `RUNS_PER_ARCHETYPE` in `streamlit_app.py`. More runs
 = smoother bands, slower first load. Cache is per-run so raising it only
 simulates the *new* runs.
 
