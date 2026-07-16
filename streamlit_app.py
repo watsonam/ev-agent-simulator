@@ -322,7 +322,10 @@ def main() -> None:
     st.set_page_config(page_title="EV Charging Behaviour Simulator", layout="wide")
     st.title("EV Charging Behaviour Simulator")
 
-    update_day_ahead_prices(MARKET_INDEX_CSV)
+    try:
+        update_day_ahead_prices(MARKET_INDEX_CSV)
+    except Exception:
+        pass
     now = datetime.now()
     latest = latest_price_date()
     earliest = now.date() - timedelta(days=LOOKBACK_DAYS)

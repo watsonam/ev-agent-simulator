@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import requests
 import pandas as pd
@@ -38,31 +39,50 @@ class ElexonClient:
         return None
 
 
-def update_day_ahead_prices(csv_path: Path) -> date:
-    existing = pd.read_csv(csv_path)
-    last_date = pd.to_datetime(existing["settlementDate"]).max().date()
+BOOTSTRAP_DAYS = 180
+
+
+def update_day_ahead_prices(csv_path: Path) -> date | None:
+    # The committed CSV is the fallback: if the file is missing I bootstrap it,
+    # and if Elexon is unreachable I just keep what's on disk rather than crash.
+    # I only write when there are genuinely new rows, and write to a temp file
+    # then rename, so a reader never catches the CSV half-written or missing.
+    try:
+        existing = pd.read_csv(csv_path)
+        last_date = pd.to_datetime(existing["settlementDate"]).max().date()
+    except (FileNotFoundError, ValueError, KeyError, pd.errors.EmptyDataError):
+        existing = pd.DataFrame()
+        last_date = date.today() - timedelta(days=BOOTSTRAP_DAYS)
+
     today = date.today()
     target = today + timedelta(days=1)
-    start = min(today, last_date + timedelta(days=1))
-    if start > target:
-        return last_date
+    start = today if not existing.empty else last_date
 
     client = ElexonClient()
     new_frames = []
     d = start
     while d <= target:
-        df = client.get_market_index(d.strftime("%Y-%m-%d"))
+        try:
+            df = client.get_market_index(d.strftime("%Y-%m-%d"))
+        except Exception:
+            df = None
         if df is not None and not df.empty:
             new_frames.append(df)
         d += timedelta(days=1)
 
     if not new_frames:
-        return last_date
+        return last_date if not existing.empty else None
 
     combined = pd.concat([existing, *new_frames], ignore_index=True)
     combined = combined.drop_duplicates(subset=["settlementDate", "settlementPeriod"], keep="last")
     combined = combined.sort_values(["settlementDate", "settlementPeriod"])
-    combined.to_csv(csv_path, index=False)
+
+    if len(combined) == len(existing):
+        return pd.to_datetime(combined["settlementDate"]).max().date()
+
+    tmp = csv_path.with_suffix(f".{uuid4().hex}.tmp")
+    combined.to_csv(tmp, index=False)
+    tmp.replace(csv_path)
     return pd.to_datetime(combined["settlementDate"]).max().date()
 
 
