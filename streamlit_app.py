@@ -51,6 +51,7 @@ COLOR_BAND_EDGE = "#74c0fc"
 COLOR_BAND_FILL = "rgba(24, 100, 171, 0.12)"
 COLOR_OCCUPANCY = "rgba(134, 142, 150, 0.35)"
 COLOR_OCCUPANCY_FILL = "rgba(134, 142, 150, 0.25)"
+COLOR_CHARGING_FILL = "rgba(24, 100, 171, 0.22)"
 COLOR_PRICE = "#495057"
 COLOR_TODAY_MARKER = "#868e96"
 COLOR_WEEKEND = "#845ef7"
@@ -191,10 +192,15 @@ def mark_weekends(fig: go.Figure, index: pd.DatetimeIndex) -> None:
 def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, midnight: datetime) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     plugged_in_label = plugged_in.map({1.0: "Yes", 0.0: "No"})
+    charging = (state == "PLUGGED_CHARGING").astype(float)
     fig.add_trace(go.Scatter(
         x=soc.index, y=plugged_in, mode="lines", line_shape="vh", fill="tozeroy",
         fillcolor=COLOR_OCCUPANCY_FILL, line=dict(width=0), name="Plugged in",
         customdata=plugged_in_label, hovertemplate="Plugged in: %{customdata}<extra></extra>",
+    ), secondary_y=True)
+    fig.add_trace(go.Scatter(
+        x=soc.index, y=charging, mode="lines", line_shape="vh", fill="tozeroy",
+        fillcolor=COLOR_CHARGING_FILL, line=dict(width=0), name="Charging", hoverinfo="skip",
     ), secondary_y=True)
     fig.add_trace(go.Scatter(
         x=soc.index, y=soc, mode="lines",
