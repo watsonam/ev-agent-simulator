@@ -564,11 +564,11 @@ def weighted_mean(df: pd.DataFrame, weights: pd.Series) -> pd.Series:
 
 
 def plugged_in_share(
-    state_df: pd.DataFrame, weights: pd.Series | None = None
+    state_df: pd.DataFrame,
+    weights: pd.Series | None = None,
+    states: tuple[State, ...] = (State.PLUGGED_CHARGING, State.PLUGGED_IDLE),
 ) -> pd.Series:
-    plugged_in = state_df.isin([State.PLUGGED_CHARGING, State.PLUGGED_IDLE]).astype(
-        float
-    )
+    plugged_in = state_df.isin(list(states)).astype(float)
     if weights is None:
         return plugged_in.mean(axis=1)
     weight_array = weights.reindex(plugged_in.columns)

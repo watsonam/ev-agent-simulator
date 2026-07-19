@@ -50,6 +50,7 @@ COLOR_BAND_FILL = "rgba(24, 100, 171, 0.12)"
 COLOR_OCCUPANCY = "rgba(134, 142, 150, 0.35)"
 COLOR_OCCUPANCY_FILL = "rgba(134, 142, 150, 0.25)"
 COLOR_CHARGING_FILL = "rgba(24, 100, 171, 0.22)"
+COLOR_CHARGING_BAR = "rgba(24, 100, 171, 0.45)"
 COLOR_PRICE = "#495057"
 COLOR_TODAY_MARKER = "#868e96"
 COLOR_WEEKEND = "#845ef7"
@@ -128,17 +129,18 @@ def scheduled_slots(archetype: ArchetypeConfig, arrival: datetime, arrival_soc: 
     return pd.DataFrame({"Time": pd.DatetimeIndex(prices.index).strftime("%a %H:%M"), "£/MWh": prices.values})
 
 
-def population_summary(population: PopulationResult, window_start: datetime, end_dt: datetime) -> tuple[pd.DataFrame, pd.Series]:
+def population_summary(population: PopulationResult, window_start: datetime, end_dt: datetime) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     weights = population["weights"]
     pop_soc = slice_window(population["soc"], window_start, end_dt)
     pop_state = slice_window(population["state"], window_start, end_dt)
     _require_rows(pop_soc, population, window_start, end_dt)
 
     pct_plugged_in = plugged_in_share(pop_state, weights) * 100
+    pct_charging = plugged_in_share(pop_state, weights, states=(State.PLUGGED_CHARGING,)) * 100
     bands = weighted_quantiles(pop_soc, weights, [0.05, 0.95])
     bands.columns = ["p05", "p95"]
     bands["mean"] = weighted_mean(pop_soc, weights)
-    return bands, pct_plugged_in
+    return bands, pct_plugged_in, pct_charging
 
 
 def cost_totals(population: PopulationResult, name: str, archetype: ArchetypeConfig) -> tuple[pd.Series, pd.Series]:
@@ -209,7 +211,7 @@ def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, mid
     return fig
 
 
-def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midnight: datetime) -> go.Figure:
+def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, pct_charging: pd.Series, midnight: datetime) -> go.Figure:
     edge = dict(color=COLOR_BAND_EDGE, width=1, dash="dot")
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(
@@ -229,12 +231,17 @@ def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midni
         x=pct_plugged_in.index, y=pct_plugged_in.values, name="% plugged in",
         marker=dict(color=COLOR_OCCUPANCY, line_width=0),
     ), secondary_y=True)
+    fig.add_trace(go.Bar(
+        x=pct_charging.index, y=pct_charging.values, name="% charging",
+        marker=dict(color=COLOR_CHARGING_BAR, line_width=0),
+    ), secondary_y=True)
 
     soc_lo = min(float(bands.to_numpy().min()), 1.0)
     soc_pad = max((1.0 - soc_lo) * 0.08, 0.01)
     fig.update_yaxes(title_text="SoC (weighted mean, p05-p95 range)", range=[soc_lo - soc_pad, 1.0], gridcolor="rgba(0,0,0,0.06)", secondary_y=False)
     fig.update_yaxes(title_text="% plugged in", range=auto_range(pct_plugged_in), showgrid=False, secondary_y=True)
     fig.update_layout(
+        barmode="overlay",
         xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"), hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
@@ -303,8 +310,8 @@ def render_population(population: PopulationResult, window_start: datetime, end_
         f"across all 6 archetypes weighted by population share ({RUNS_PER_ARCHETYPE} runs each). "
         f"From {EVENING_START.strftime('%-I%p').lower()} the day before (T-1) {note}."
     )
-    bands, pct_plugged_in = population_summary(population, window_start, end_dt)
-    st.plotly_chart(build_population_chart(bands, pct_plugged_in, midnight), width="stretch")
+    bands, pct_plugged_in, pct_charging = population_summary(population, window_start, end_dt)
+    st.plotly_chart(build_population_chart(bands, pct_plugged_in, pct_charging, midnight), width="stretch")
 
 
 def render_savings(population: PopulationResult, archetypes: dict[str, ArchetypeConfig]) -> None:
