@@ -481,23 +481,26 @@ def get_or_advance_run(
     cache_path = RUN_CACHE_DIR / f"{archetype_name}_{run_number}.pkl"
     archetype = get_archetype(archetype_name)
 
+    trajectory = pd.DataFrame(columns=["state", "soc", "cost"]).rename_axis("time")
+    run_state = initial_state(archetype, end_dt.date() - timedelta(days=LOOKBACK_DAYS))
     if cache_path.exists():
-        with open(cache_path, "rb") as f:
-            trajectory, run_state = pickle.load(f)
-    else:
-        trajectory = pd.DataFrame(columns=["state", "soc", "cost"]).rename_axis("time")
-        run_state = initial_state(
-            archetype, end_dt.date() - timedelta(days=LOOKBACK_DAYS)
-        )
+        try:
+            with open(cache_path, "rb") as f:
+                trajectory, run_state = pickle.load(f)
+        except (pickle.PickleError, EOFError, OSError):  # this is to prevent cache re run from failing in Streamlit cloud
+            pass
 
     if run_state.simulation_time < end_dt:
         new_rows, run_state = advance(archetype, run_state, end_dt)
         trajectory = pd.concat([trajectory, new_rows])
 
-    tmp_path = cache_path.with_suffix(f".{uuid4().hex}.pkl.tmp")
-    with open(tmp_path, "wb") as f:
-        pickle.dump((trajectory, run_state), f)
-    tmp_path.replace(cache_path)
+    try:
+        tmp_path = cache_path.with_suffix(f".{uuid4().hex}.pkl.tmp")
+        with open(tmp_path, "wb") as f:
+            pickle.dump((trajectory, run_state), f)
+        tmp_path.replace(cache_path)
+    except (pickle.PickleError, OSError): # this is to prevent cache re run from failing in Streamlit cloud
+        pass
     return trajectory
 
 
