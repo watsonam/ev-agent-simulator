@@ -50,7 +50,7 @@ COLOR_BAND_FILL = "rgba(24, 100, 171, 0.12)"
 COLOR_OCCUPANCY = "rgba(134, 142, 150, 0.35)"
 COLOR_OCCUPANCY_FILL = "rgba(134, 142, 150, 0.25)"
 COLOR_CHARGING_FILL = "rgba(24, 100, 171, 0.22)"
-COLOR_CHARGING_BAR = "rgba(24, 100, 171, 0.45)"
+COLOR_CHARGING_BAR = "rgba(32, 145, 128, 0.55)"
 COLOR_PRICE = "#495057"
 COLOR_TODAY_MARKER = "#868e96"
 COLOR_WEEKEND = "#845ef7"
@@ -319,8 +319,8 @@ def render_savings(population: PopulationResult, archetypes: dict[str, Archetype
     days = (cast(pd.Timestamp, idx.max()).date() - cast(pd.Timestamp, idx.min()).date()).days + 1
     st.header("Savings")
     st.caption(
-        f"Over the last {days} days. £/kWh is each run's total cost over its total energy, averaged across runs. "
-        "Total cost and energy are per-run means. Savings is Average (UK)'s rate applied to the same energy."
+        f"What each driver pays to charge, over the last {days} days. "
+        "Savings compares that to paying Average (UK)'s price."
     )
     st.dataframe(
         savings_table(population, archetypes),
