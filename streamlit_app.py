@@ -347,8 +347,7 @@ def main() -> None:
     note = time_note(sim_date, now)
     spinner_text = (
         f"First-time setup: simulating {RUNS_PER_ARCHETYPE * len(ARCHETYPE_NAMES)} runs "
-        "across 6 archetypes. Takes a few minutes, only happens once - every later "
-        "visit reads from cache and is instant."
+        "across 6 archetypes. Reads from cache from then on."
         if is_cache_cold(RUNS_PER_ARCHETYPE) else "Loading..."
     )
     with st.spinner(spinner_text):
