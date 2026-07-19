@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timedelta
+from typing import cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -26,9 +27,6 @@ from simulation import (
     weighted_quantiles,
 )
 
-# The model runs on UK clock time - plug times, departure windows and Elexon
-# settlement periods are all local. The hosted server runs in UTC, so read the
-# clock in Europe/London (naive) or the app lags an hour behind in summer.
 UK_TZ = ZoneInfo("Europe/London")
 
 
@@ -64,11 +62,11 @@ def auto_range(values, pad_frac: float = 0.1) -> list[float]:
 
 
 def archetype_columns(df: pd.DataFrame, name: str) -> pd.DataFrame:
-    return df[[c for c in df.columns if c.startswith(f"{name}_")]]
+    return cast(pd.DataFrame, df[[c for c in df.columns if c.startswith(f"{name}_")]])
 
 
 def slice_window(df: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFrame:
-    return df[(df.index >= start) & (df.index < end)]
+    return cast(pd.DataFrame, df[(df.index >= start) & (df.index < end)])
 
 
 def sim_window(sim_date: date, now: datetime) -> tuple[datetime, datetime, datetime]:
@@ -103,20 +101,17 @@ def _require_rows(df: pd.DataFrame, population: PopulationResult, window_start: 
 
 def sample_run_trajectory(population: PopulationResult, name: str, window_start: datetime, end_dt: datetime) -> tuple[pd.Series, pd.Series, pd.Series]:
     run_col = f"{name}_0"
-    # A run starts at its own plugin_time, so near the earliest selectable date
-    # the window can reach back before this run has any slots - those rows come
-    # through as NaN once the archetypes are aligned. Drop them so we only plot
-    # real simulated slots.
-    state_run = slice_window(population["state"][[run_col]], window_start, end_dt)[run_col].dropna()
-    soc_run = slice_window(population["soc"][[run_col]], window_start, end_dt)[run_col].reindex(state_run.index)
+    state_df = cast(pd.DataFrame, population["state"][[run_col]])
+    soc_df = cast(pd.DataFrame, population["soc"][[run_col]])
+    state_run = cast(pd.Series, slice_window(state_df, window_start, end_dt)[run_col]).dropna()
+    soc_run = cast(pd.Series, slice_window(soc_df, window_start, end_dt)[run_col]).reindex(state_run.index)
     _require_rows(state_run.to_frame(), population, window_start, end_dt)
     plugged_in = state_run.isin([State.PLUGGED_CHARGING, State.PLUGGED_IDLE]).astype(float)
-    return soc_run, plugged_in, state_run.map(lambda s: s.name)
+    state_names = state_run.map(lambda s: s.name)
+    return soc_run, plugged_in, state_names
 
 
 def charging_session_window(state: pd.Series, archetype: ArchetypeConfig) -> tuple[datetime, datetime] | None:
-    # Arrival is when the car plugs in (enters any plugged state), not when it
-    # starts drawing power - a scheduled charger's window opens at plug-in.
     plugged = state.isin(["PLUGGED_CHARGING", "PLUGGED_IDLE"])
     arrivals = plugged & ~plugged.shift(1, fill_value=False)
     if not arrivals.any():
@@ -128,9 +123,9 @@ def charging_session_window(state: pd.Series, archetype: ArchetypeConfig) -> tup
 
 def scheduled_slots(archetype: ArchetypeConfig, arrival: datetime, arrival_soc: float, deadline: datetime) -> pd.DataFrame:
     schedule = build_charging_schedule(archetype, arrival, arrival_soc, deadline)
-    charged = schedule[schedule > 0].index
+    charged = cast(pd.Series, schedule[schedule > 0]).index
     prices = prices_in_window(arrival, deadline).reindex(charged)
-    return pd.DataFrame({"Time": prices.index.strftime("%a %H:%M"), "£/MWh": prices.values})
+    return pd.DataFrame({"Time": pd.DatetimeIndex(prices.index).strftime("%a %H:%M"), "£/MWh": prices.values})
 
 
 def population_summary(population: PopulationResult, window_start: datetime, end_dt: datetime) -> tuple[pd.DataFrame, pd.Series]:
@@ -147,8 +142,6 @@ def population_summary(population: PopulationResult, window_start: datetime, end
 
 
 def cost_totals(population: PopulationResult, name: str, archetype: ArchetypeConfig) -> tuple[pd.Series, pd.Series]:
-    # Whole cached window per run - no day slicing, so charging across midnight
-    # is handled naturally and one noisy day doesn't drive the number.
     energy = archetype_columns(population["soc"], name).diff().clip(lower=0) * archetype.battery_kwh
     return archetype_columns(population["cost"], name).sum(), energy.sum()
 
@@ -178,12 +171,13 @@ def mark_today(fig: go.Figure, midnight: datetime) -> None:
 
 
 def mark_weekends(fig: go.Figure, index: pd.DatetimeIndex) -> None:
-    start, end = index.min(), index.max()
+    start = cast(pd.Timestamp, index.min())
+    end = cast(pd.Timestamp, index.max())
     day = start.date()
     while day <= end.date():
         if day.weekday() == 5:
-            span_start = max(start, datetime.combine(day, time.min))
-            span_end = min(end, datetime.combine(day + timedelta(days=2), time.min))
+            span_start = max(start, pd.Timestamp(datetime.combine(day, time.min)))
+            span_end = min(end, pd.Timestamp(datetime.combine(day + timedelta(days=2), time.min)))
             if span_start < span_end:
                 fig.add_vrect(x0=span_start, x1=span_end, fillcolor=COLOR_WEEKEND, opacity=0.08, layer="below", line_width=0)
         day += timedelta(days=1)
@@ -211,7 +205,7 @@ def build_soc_chart(soc: pd.Series, plugged_in: pd.Series, state: pd.Series, mid
     fig.update_yaxes(visible=False, range=[0, 1], secondary_y=True)
     fig.update_layout(xaxis_title="Time", xaxis=dict(tickformat="%a %H:%M"), hovermode="x unified")
     mark_today(fig, midnight)
-    mark_weekends(fig, soc.index)
+    mark_weekends(fig, pd.DatetimeIndex(soc.index))
     return fig
 
 
@@ -245,12 +239,12 @@ def build_population_chart(bands: pd.DataFrame, pct_plugged_in: pd.Series, midni
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     mark_today(fig, midnight)
-    mark_weekends(fig, bands.index)
+    mark_weekends(fig, pd.DatetimeIndex(bands.index))
     return fig
 
 
 def build_price_chart(prices: pd.Series) -> go.Figure:
-    fig = go.Figure(go.Scatter(x=[t.strftime("%H:%M") for t in prices.index], y=prices.values, mode="lines", line=dict(color=COLOR_PRICE, width=2)))
+    fig = go.Figure(go.Scatter(x=[cast(time, t).strftime("%H:%M") for t in prices.index], y=prices.values, mode="lines", line=dict(color=COLOR_PRICE, width=2)))
     fig.update_yaxes(gridcolor="rgba(0,0,0,0.06)")
     fig.update_layout(yaxis_title="£/MWh", xaxis_title="Time")
     return fig
@@ -289,10 +283,10 @@ def render_plugin_behaviour(population: PopulationResult, name: str, window_star
         session = charging_session_window(state, archetype)
         if session is not None:
             arrival, deadline = session
-            pos = soc.index.get_loc(arrival)
+            pos = cast(int, soc.index.get_loc(arrival))
             arrival_soc = soc.iloc[pos - 1] if pos > 0 else soc.iloc[pos]
             slots = scheduled_slots(archetype, arrival, arrival_soc, deadline)
-            slots_text = ", ".join(f"{row.Time} ({row._2:.2f})" for row in slots.itertuples())
+            slots_text = ", ".join(f"{t} ({p:.2f})" for t, p in zip(slots["Time"], slots["£/MWh"]))
             st.caption(
                 f"Charging slots between {arrival.strftime('%a %H:%M')} and "
                 f"{deadline.strftime('%a %H:%M')} (£/MWh): {slots_text}"
@@ -314,8 +308,8 @@ def render_population(population: PopulationResult, window_start: datetime, end_
 
 
 def render_savings(population: PopulationResult, archetypes: dict[str, ArchetypeConfig]) -> None:
-    idx = population["soc"].index
-    days = (idx.max().date() - idx.min().date()).days + 1
+    idx = pd.DatetimeIndex(population["soc"].index)
+    days = (cast(pd.Timestamp, idx.max()).date() - cast(pd.Timestamp, idx.min()).date()).days + 1
     st.header("Savings")
     st.caption(
         f"Over the last {days} days. £/kWh is each run's total cost over its total energy, averaged across runs. "

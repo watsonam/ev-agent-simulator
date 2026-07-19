@@ -39,81 +39,29 @@ class ElexonClient:
         return None
 
 
-BOOTSTRAP_DAYS = 180
-
-
-def update_day_ahead_prices(csv_path: Path) -> date | None:
-    # The committed CSV is the fallback: if the file is missing I bootstrap it,
-    # and if Elexon is unreachable I just keep what's on disk rather than crash.
-    # I only write when there are genuinely new rows, and write to a temp file
-    # then rename, so a reader never catches the CSV half-written or missing.
-    try:
-        existing = pd.read_csv(csv_path)
-        last_date = pd.to_datetime(existing["settlementDate"]).max().date()
-    except (FileNotFoundError, ValueError, KeyError, pd.errors.EmptyDataError):
-        existing = pd.DataFrame()
-        last_date = date.today() - timedelta(days=BOOTSTRAP_DAYS)
-
+def update_day_ahead_prices(csv_path: Path) -> None:
+    existing = pd.read_csv(csv_path)
+    last_date = pd.to_datetime(existing["settlementDate"]).max().date()
     today = date.today()
-    target = today + timedelta(days=1)
-    start = today if not existing.empty else last_date
 
     client = ElexonClient()
     new_frames = []
-    d = start
-    while d <= target:
-        try:
-            df = client.get_market_index(d.strftime("%Y-%m-%d"))
-        except Exception:
-            df = None
+    d = min(today, last_date)
+    while d <= today + timedelta(days=1):
+        df = client.get_market_index(d.strftime("%Y-%m-%d"))
         if df is not None and not df.empty:
             new_frames.append(df)
         d += timedelta(days=1)
 
     if not new_frames:
-        return last_date if not existing.empty else None
+        return
 
     combined = pd.concat([existing, *new_frames], ignore_index=True)
     combined = combined.drop_duplicates(subset=["settlementDate", "settlementPeriod"], keep="last")
     combined = combined.sort_values(["settlementDate", "settlementPeriod"])
-
     if len(combined) == len(existing):
-        return pd.to_datetime(combined["settlementDate"]).max().date()
+        return
 
     tmp = csv_path.with_suffix(f".{uuid4().hex}.tmp")
     combined.to_csv(tmp, index=False)
     tmp.replace(csv_path)
-    return pd.to_datetime(combined["settlementDate"]).max().date()
-
-
-if __name__ == "__main__":
-    from datetime import datetime
-
-    client = ElexonClient()
-    end_date = datetime(2026, 7, 7)
-    start_date = end_date - timedelta(days=180)
-
-    print(f"Fetching {start_date.date()} to {end_date.date()}")
-
-    all_data = []
-    current_date = start_date
-    count = 0
-
-    while current_date <= end_date:
-        date_str = current_date.strftime("%Y-%m-%d")
-        print(date_str)
-        df = client.get_market_index(date_str)
-        if df is not None:
-            all_data.append(df)
-            count += len(df)
-
-        current_date += timedelta(days=1)
-
-    if all_data:
-        combined_df = pd.concat(all_data, ignore_index=True)
-        print(f"Total: {len(combined_df)} records")
-        combined_df.to_csv("market_index.csv", index=False)
-        print("Exported to market_index.csv")
-    else:
-        print("No data")
-    

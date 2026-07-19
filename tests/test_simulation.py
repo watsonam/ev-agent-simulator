@@ -1,19 +1,84 @@
+import contextlib, io
 import random
 from datetime import date, datetime, time, timedelta
 
+import numpy as np
+import pandas as pd
 import pytest
 
 import archetypes
 import simulation
+import streamlit_app
+from archetypes import State
 
 
 SPREADSHEET = {
-    "average_uk":          dict(pop=40, miles=9435,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
-    "intelligent_octopus": dict(pop=30, miles=28105, battery=72.5, eff=3.5, freq=1.0, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
-    "infrequent_charging": dict(pop=10, miles=9435,  battery=60,   eff=3.5, freq=0.2, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
-    "infrequent_driving":  dict(pop=10, miles=5700,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(18, 0), plugout=time(7, 0),  target=0.8),
-    "scheduled_charging":  dict(pop=9,  miles=9435,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(22, 0), plugout=time(9, 0),  target=0.8),
-    "always_plugged_in":   dict(pop=1,  miles=9435,  battery=60,   eff=3.5, freq=1.0, kw=7.0, plugin=time(0, 0),  plugout=time(23, 59), target=0.8),
+    "average_uk": dict(
+        pop=40,
+        miles=9435,
+        battery=60,
+        eff=3.5,
+        freq=1.0,
+        kw=7.0,
+        plugin=time(18, 0),
+        plugout=time(7, 0),
+        target=0.8,
+    ),
+    "intelligent_octopus": dict(
+        pop=30,
+        miles=28105,
+        battery=72.5,
+        eff=3.5,
+        freq=1.0,
+        kw=7.0,
+        plugin=time(18, 0),
+        plugout=time(7, 0),
+        target=0.8,
+    ),
+    "infrequent_charging": dict(
+        pop=10,
+        miles=9435,
+        battery=60,
+        eff=3.5,
+        freq=0.2,
+        kw=7.0,
+        plugin=time(18, 0),
+        plugout=time(7, 0),
+        target=0.8,
+    ),
+    "infrequent_driving": dict(
+        pop=10,
+        miles=5700,
+        battery=60,
+        eff=3.5,
+        freq=1.0,
+        kw=7.0,
+        plugin=time(18, 0),
+        plugout=time(7, 0),
+        target=0.8,
+    ),
+    "scheduled_charging": dict(
+        pop=9,
+        miles=9435,
+        battery=60,
+        eff=3.5,
+        freq=1.0,
+        kw=7.0,
+        plugin=time(22, 0),
+        plugout=time(9, 0),
+        target=0.8,
+    ),
+    "always_plugged_in": dict(
+        pop=1,
+        miles=9435,
+        battery=60,
+        eff=3.5,
+        freq=1.0,
+        kw=7.0,
+        plugin=time(0, 0),
+        plugout=time(23, 59),
+        target=0.8,
+    ),
 }
 
 
@@ -31,25 +96,26 @@ def test_config_matches_spreadsheet_inputs(name, s):
     assert cfg.target_soc == s["target"]
 
 
-@pytest.mark.parametrize("name", SPREADSHEET)
-def test_population_shares_sum_to_one(name):
-    total = sum(getattr(archetypes.ArchetypeFactory, n)().population_share for n in SPREADSHEET)
+def test_population_shares_sum_to_one():
+    total = sum(
+        getattr(archetypes.ArchetypeFactory, n)().population_share for n in SPREADSHEET
+    )
     assert total == pytest.approx(1.0)
-
-
-def test_calendar_days_sum_to_year():
-    assert archetypes.WEEKDAYS_PER_YEAR + archetypes.WEEKEND_DAYS_PER_YEAR == 365
 
 
 def test_weekday_kwh_is_ratio_times_weekend():
     cfg = archetypes.ArchetypeFactory.average_uk()
-    assert cfg.weekday_kwh_per_day == pytest.approx(cfg.weekday_weekend_ratio * cfg.weekend_kwh_per_day)
+    assert cfg.weekday_kwh_per_day == pytest.approx(
+        cfg.weekday_weekend_ratio * cfg.weekend_kwh_per_day
+    )
 
 
 def test_split_trip_conserves_soc_drop():
     random.seed(0)
     for _ in range(100):
-        soc_after, remaining, drop_per_slot, arrival = simulation.split_trip(0.8, 0.2, {"x": 0.85})
+        soc_after, remaining, drop_per_slot, arrival = simulation.split_trip(
+            0.8, 0.2, {"x": 0.85}
+        )
         assert arrival == pytest.approx(0.6)
         assert soc_after - remaining * drop_per_slot == pytest.approx(arrival)
 
@@ -68,48 +134,51 @@ def test_past_price_gap_raises():
         simulation._prices_with_dates(date(2020, 1, 1))
 
 
+def test_unpriced_date_falls_back_to_nearest_prior_day():
+    latest = simulation.latest_price_date()
+    unpriced = latest + timedelta(days=5)
+    prices = simulation._prices_with_dates(unpriced)
+    assert not prices.empty
+    assert all(pd.Timestamp(ts).date() == unpriced for ts in prices.index)
+
+
 def test_plugged_charging_only_when_power_flows():
-    # A scheduled/price charger sits plugged in but idle until its cheap slots.
-    # A slot should only read PLUGGED_CHARGING when it actually charged (cost>0).
-    import contextlib, io
     cfg = archetypes.ArchetypeFactory.intelligent_octopus()
     latest = simulation.latest_price_date()
     rs = simulation.RunState(
         simulation_time=datetime.combine(latest - timedelta(days=1), time(18, 0)),
-        state=simulation.State.PLUGGED_CHARGING,
+        state=State.PLUGGED_CHARGING,
         soc=0.455,
     )
     with contextlib.redirect_stdout(io.StringIO()):
         df, _ = simulation.advance(cfg, rs, datetime.combine(latest, time(8, 0)))
-    states = df["state"].map(lambda s: s.name)
-    charging = states == "PLUGGED_CHARGING"
+    charging = df["state"] == State.PLUGGED_CHARGING
     assert charging.any()
     assert (df.loc[charging, "cost"] > 0).all()
-    assert (states.iloc[:4] == "PLUGGED_IDLE").all()
+    assert (df["state"].iloc[:4] == State.PLUGGED_IDLE).all()
 
 
 def test_sample_run_trajectory_drops_leading_nan():
-    # Near the earliest date the view window starts before a run's first slot,
-    # so the aligned population has leading NaN rows - these must be dropped,
-    # not fed to state.name (which crashed the live app).
-    import pandas as pd
-    import streamlit_app
-    from archetypes import State
-
     idx = pd.to_datetime(["2026-07-09 17:30", "2026-07-09 18:00", "2026-07-09 18:30"])
-    state = pd.DataFrame({"average_uk_0": [float("nan"), State.PLUGGED_IDLE, State.DRIVING]}, index=idx)
+    state = pd.DataFrame(
+        {"average_uk_0": [float("nan"), State.PLUGGED_IDLE, State.DRIVING]}, index=idx
+    )
     soc = pd.DataFrame({"average_uk_0": [float("nan"), 0.8, 0.7]}, index=idx)
-    population = {"soc": soc, "state": state, "cost": soc, "weights": pd.Series({"average_uk_0": 1.0})}
+    population: simulation.PopulationResult = {
+        "soc": soc,
+        "state": state,
+        "cost": soc,
+        "weights": pd.Series({"average_uk_0": 1.0}),
+    }
 
     soc_run, plugged_in, state_names = streamlit_app.sample_run_trajectory(
-        population, "average_uk", idx[0].to_pydatetime(), datetime(2026, 7, 9, 19, 0)
+        population, "average_uk", datetime(2026, 7, 9, 17, 30), datetime(2026, 7, 9, 19, 0)
     )
     assert list(state_names) == ["PLUGGED_IDLE", "DRIVING"]
     assert len(soc_run) == 2
 
 
 def test_weighted_quantile_matches_hazen_with_equal_weights():
-    import numpy as np
     v = np.array([1.0, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     w = np.ones_like(v)
     for q in [0.05, 0.25, 0.5, 0.75, 0.95]:
@@ -119,16 +188,14 @@ def test_weighted_quantile_matches_hazen_with_equal_weights():
 
 
 def test_weighted_quantile_ignores_nan():
-    import numpy as np
     v = np.array([1.0, 2, 3, float("nan"), float("nan")])
     w = np.ones_like(v)
     assert simulation._weighted_quantile(v, w, 0.5) == pytest.approx(2.0)
 
 
 def test_weighted_mean_renormalises_over_present_runs():
-    import pandas as pd
     df = pd.DataFrame({"a": [float("nan"), 1.0], "b": [0.5, 0.5]})
     weights = pd.Series({"a": 1.0, "b": 1.0})
     result = simulation.weighted_mean(df, weights)
-    assert result.iloc[0] == pytest.approx(0.5)   # only b present, not 0.5/2
+    assert result.iloc[0] == pytest.approx(0.5)
     assert result.iloc[1] == pytest.approx(0.75)

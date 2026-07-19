@@ -5,7 +5,7 @@ from functools import lru_cache
 from math import ceil
 from pathlib import Path
 from random import gauss, random
-from typing import TypedDict
+from typing import TypedDict, cast
 from uuid import uuid4
 
 import numpy as np
@@ -22,9 +22,6 @@ from archetypes import (
 
 MARKET_INDEX_CSV = Path(__file__).parent / "data" / "market_index.csv"
 CACHE_DIR = Path(__file__).parent / "data" / "cache"
-# Bump when the simulated trajectory changes. Streamlit Cloud keeps the run
-# cache across code deploys, so without a version the dashboard would keep
-# serving trajectories built by the old logic.
 RUN_CACHE_VERSION = 2
 RUN_CACHE_DIR = CACHE_DIR / f"runs_v{RUN_CACHE_VERSION}"
 LOOKBACK_DAYS = 7
@@ -59,7 +56,7 @@ def get_archetype(name: str) -> ArchetypeConfig:
 
 
 @lru_cache(maxsize=1)
-def _load_price_data(mtime: float) -> pd.DataFrame:
+def _load_price_data(_mtime: float) -> pd.DataFrame:
     return pd.read_csv(MARKET_INDEX_CSV, parse_dates=["settlementDate"])
 
 
@@ -67,17 +64,17 @@ def _price_data() -> pd.DataFrame:
     return _load_price_data(MARKET_INDEX_CSV.stat().st_mtime)
 
 
+def _slot_start(period: int) -> time:
+    minutes = (period - 1) * 30
+    return time(minutes // 60, minutes % 60)
+
+
 def get_prices(d: date) -> pd.Series:
     df = _price_data()
-    day = df[df["settlementDate"] == pd.Timestamp(d)].sort_values("settlementPeriod")
+    day = cast(pd.DataFrame, df[df["settlementDate"] == pd.Timestamp(d)]).sort_values("settlementPeriod")
     if day.empty:
         raise ValueError(f"No price data for {d} in {MARKET_INDEX_CSV}")
-
-    def slot_start(period: int) -> time:
-        minutes = (period - 1) * 30
-        return time(minutes // 60, minutes % 60)
-
-    index = [slot_start(p) for p in day["settlementPeriod"]]
+    index = [_slot_start(p) for p in day["settlementPeriod"]]
     return pd.Series(day["price"].values, index=index, name="price_gbp_per_mwh")
 
 
@@ -85,35 +82,23 @@ def latest_price_date() -> date:
     return _price_data()["settlementDate"].max().date()
 
 
-def _prices_or_empty(d: date) -> pd.Series:
-    try:
-        return get_prices(d)
-    except ValueError:
-        return pd.Series(dtype=float, name="price_gbp_per_mwh")
-
-
 def _prices_with_dates(d: date) -> pd.Series:
-    latest = latest_price_date()
-    if d < latest:
-        prices = get_prices(d)
-    else:
-        template_date = min(d, latest)
-        prices = _prices_or_empty(template_date).combine_first(
-            _prices_or_empty(template_date - timedelta(days=1))
-        )
-        if prices.empty:
-            raise ValueError(f"No price data for {d} or the day before, in {MARKET_INDEX_CSV}")
-    return pd.Series(
-        prices.values,
-        index=[datetime.combine(d, t) for t in prices.index],
-        name=prices.name,
+    df = _price_data()
+    window = cast(pd.DataFrame, df[df["settlementDate"] <= pd.Timestamp(d)])
+    if window.empty:
+        raise ValueError(f"No price data on or before {d} in {MARKET_INDEX_CSV}")
+    latest = window.sort_values("settlementDate").groupby("settlementPeriod").tail(1)
+    index = [datetime.combine(d, _slot_start(p)) for p in latest["settlementPeriod"]]
+    return cast(
+        pd.Series,
+        pd.Series(latest["price"].values, index=index, name="price_gbp_per_mwh").sort_index(),
     )
 
 
 def prices_in_window(start: datetime, end: datetime) -> pd.Series:
     dates = sorted({start.date(), end.date()})
     all_prices = pd.concat([_prices_with_dates(d) for d in dates])
-    return all_prices[(all_prices.index >= start) & (all_prices.index < end)]
+    return cast(pd.Series, all_prices[(all_prices.index >= start) & (all_prices.index < end)])
 
 
 def build_charging_schedule(
@@ -244,9 +229,7 @@ def advance(
 
     rows = []
 
-    print(
-        f"[{archetype.name}] strategy={archetype.charging_strategy.name} resume={simulation_time} soc={soc:.4f}"
-    )
+    print(f"picking {archetype.name} back up from {simulation_time} at soc {soc:.2f} ({archetype.charging_strategy.name})")
 
     while simulation_time < end_time:
         current_date = simulation_time.date()
@@ -279,15 +262,13 @@ def advance(
                     io_schedule = build_charging_schedule(
                         archetype, simulation_time, soc, deadline
                     )
-                    print(
-                        f"[{simulation_time}] IO schedule built: deadline={deadline} "
-                        f"slots={list(io_schedule[io_schedule > 0].index)}"
-                    )
-                if io_schedule.get(simulation_time, 0.0) > 0:
+                    charging_slots = list(cast(pd.Series, io_schedule[io_schedule > 0]).index)
+                    print(f"{simulation_time} octopus grabs its cheapest slots {charging_slots}, wants to be full by {deadline}")
+                if cast(float, io_schedule.get(simulation_time, 0.0)) > 0:
                     soc = min(archetype.target_soc, soc + charge_soc_per_slot)
                 if (
                     soc >= archetype.target_soc
-                    or simulation_time >= io_schedule.index.max()
+                    or simulation_time >= cast(datetime, io_schedule.index.max())
                 ):
                     state = State.PLUGGED_IDLE
                     io_schedule = None
@@ -308,9 +289,7 @@ def advance(
                     idle_departure_time = next_occurrence(
                         simulation_time, current_date, sample_departure_time(curve)
                     )
-                    print(
-                        f"  [{simulation_time}] sampled idle departure time: {idle_departure_time}"
-                    )
+                    print(f"{simulation_time} they head out around {idle_departure_time}")
                 if simulation_time >= idle_departure_time:
                     duration_curve = (
                         transitions.driving_to_parked
@@ -352,9 +331,7 @@ def advance(
                     parked_departure_time = next_occurrence(
                         simulation_time, current_date, sample_departure_time(curve)
                     )
-                    print(
-                        f"  [{simulation_time}] sampled parked departure time: {parked_departure_time}"
-                    )
+                    print(f"{simulation_time} they drive home around {parked_departure_time}")
                 if simulation_time >= parked_departure_time:
                     soc, trip_slots_remaining, trip_drop_per_slot, arrival_soc = split_trip(
                         soc, trip_soc_drop, transitions.driving_to_plugged_in
@@ -396,16 +373,9 @@ def advance(
             if state != state_before
             else ""
         )
-        cost_note = f" cost=£{cost:.4f}" if cost > 0 else ""
-        print(
-            f"  [{simulation_time}] {day_type:7s} state={state.name:16s} soc={soc:.4f}{cost_note}{marker}"
-        )
+        cost_note = f" spent £{cost:.4f}" if cost > 0 else ""
+        print(f"  {simulation_time} {day_type} {state.name} soc={soc:.2f}{cost_note}{marker}")
 
-        # Report PLUGGED_CHARGING only when power actually flows this slot. A
-        # scheduled/price charger sits plugged in but idle until its cheap
-        # slots come round - internally it stays in the charging state so the
-        # schedule keeps running, but the recorded state should read IDLE while
-        # SoC is flat, not CHARGING.
         if state in (State.PLUGGED_CHARGING, State.PLUGGED_IDLE):
             logged_state = State.PLUGGED_CHARGING if energy_delivered_kwh > 0 else State.PLUGGED_IDLE
         else:
