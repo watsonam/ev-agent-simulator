@@ -71,11 +71,12 @@ def _slot_start(period: int) -> time:
 
 def get_prices(d: date) -> pd.Series:
     df = _price_data()
-    day = cast(pd.DataFrame, df[df["settlementDate"] == pd.Timestamp(d)]).sort_values("settlementPeriod")
-    if day.empty:
-        raise ValueError(f"No price data for {d} in {MARKET_INDEX_CSV}")
-    index = [_slot_start(p) for p in day["settlementPeriod"]]
-    return pd.Series(day["price"].values, index=index, name="price_gbp_per_mwh")
+    window = cast(pd.DataFrame, df[df["settlementDate"] <= pd.Timestamp(d)])
+    if window.empty:
+        raise ValueError(f"No price data on or before {d} in {MARKET_INDEX_CSV}")
+    latest = window.sort_values("settlementDate").groupby("settlementPeriod").tail(1).sort_values("settlementPeriod")
+    index = [_slot_start(p) for p in latest["settlementPeriod"]]
+    return cast(pd.Series, pd.Series(latest["price"].values, index=index, name="price_gbp_per_mwh"))
 
 
 def latest_price_date() -> date:
