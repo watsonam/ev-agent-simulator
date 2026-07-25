@@ -7,7 +7,8 @@ venv/
 .python-version
 .DS_Store
 .vscode/
-.claude/
+.claude/*
+!.claude/skills/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
